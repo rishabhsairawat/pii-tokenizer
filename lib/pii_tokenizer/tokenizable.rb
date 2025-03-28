@@ -5,7 +5,11 @@ module PiiTokenizer
     extend ActiveSupport::Concern
 
     included do
-      class_attribute :tokenized_fields, default: []
+      # Rails 5 uses class_attribute with default option, but Rails 4 doesn't support it
+      # Using compatible approach for both Rails 4 and 5
+      class_attribute :tokenized_fields
+      self.tokenized_fields = []
+      
       class_attribute :entity_type_proc
       class_attribute :entity_id_proc
 

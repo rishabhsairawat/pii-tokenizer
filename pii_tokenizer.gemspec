@@ -22,8 +22,8 @@ Gem::Specification.new do |spec|
 
   spec.required_ruby_version = ">= 2.4.1"
 
-  spec.add_dependency "activesupport", ">= 5.0", "< 6.0"
-  spec.add_dependency "activerecord", ">= 5.0", "< 6.0"
+  spec.add_dependency "activesupport", ">= 4.2", "< 6.0"
+  spec.add_dependency "activerecord", ">= 4.2", "< 6.0"
   spec.add_dependency "faraday", "~> 0.15"
 
   spec.add_development_dependency "bundler", "~> 2.0"

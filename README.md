@@ -62,6 +62,11 @@ The gem will automatically:
 3. Batch operations are used for both encryption and decryption to minimize API calls.
 4. Authentication is based on IP whitelisting; no API key is required.
 
+## Compatibility
+
+- Supports Ruby 2.4.1 or higher
+- Compatible with Rails 4.2 and Rails 5.x
+
 ## Local Development
 
 ### Prerequisites
@@ -111,7 +116,7 @@ bundle exec rake build
 
 ### Running Tests with Different Ruby Versions
 
-The gem supports Rails 5 and Ruby 2.4.1 or higher. To test against different Ruby versions, you can use rbenv or rvm:
+The gem supports Rails 4.2, Rails 5.x, and Ruby 2.4.1 or higher. To test against different Ruby versions, you can use rbenv or rvm:
 
 ```bash
 # Using rbenv
