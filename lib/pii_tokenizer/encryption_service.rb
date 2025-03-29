@@ -19,23 +19,23 @@ module PiiTokenizer
     # @return [Hash] Mapping of request keys to encrypted values
     def encrypt_batch(tokens_data)
       return {} if tokens_data.empty?
-      
+
       request_data = tokens_data.map do |token_data|
         {
-          value: token_data[:value].to_s,
-          entity_id: token_data[:entity_id],
           entity_type: token_data[:entity_type],
-          field_name: token_data[:field_name]
+          entity_id: token_data[:entity_id],
+          pii_type: token_data[:field_name].upcase, # Assuming pii_type is the field name in uppercase
+          pii_field: token_data[:value]
         }
       end
 
-      response = api_client.post('/encrypt_batch') do |req|
-        req.body = { tokens: request_data }.to_json
+      response = api_client.post('/api/v1/tokens/bulk') do |req|
+        req.body = request_data.to_json
         req.headers['Content-Type'] = 'application/json'
       end
 
       if response.success?
-        parse_encrypt_response(response.body, tokens_data)
+        parse_encrypt_response(response.body)
       else
         handle_error_response(response)
       end
@@ -53,23 +53,11 @@ module PiiTokenizer
     # @return [Hash] Mapping of token keys to decrypted values
     def decrypt_batch(tokens_data)
       return {} if tokens_data.empty?
-      
-      request_data = tokens_data.map do |token_data|
-        {
-          token: token_data[:token].to_s,
-          entity_id: token_data[:entity_id],
-          entity_type: token_data[:entity_type],
-          field_name: token_data[:field_name]
-        }
-      end
 
-      response = api_client.post('/decrypt_batch') do |req|
-        req.body = { tokens: request_data }.to_json
-        req.headers['Content-Type'] = 'application/json'
-      end
+      response = api_client.get('/api/v1/tokens/decrypt', { params: { tokens: tokens_data } })
 
       if response.success?
-        parse_decrypt_response(response.body, tokens_data)
+        parse_decrypt_response(response.body)
       else
         handle_error_response(response)
       end
@@ -83,34 +71,31 @@ module PiiTokenizer
       end
     end
 
-    def parse_encrypt_response(response_body, tokens_data)
+    def parse_encrypt_response(response_body)
       result = {}
       response_data = JSON.parse(response_body)
-      
-      response_data['tokens'].each_with_index do |token_data, index|
-        original_data = tokens_data[index]
-        key = generate_key(original_data)
+
+      response_data['data'].each do |token_data|
+        key = generate_key(token_data)
         result[key] = token_data['token']
       end
-      
+
       result
     end
 
-    def parse_decrypt_response(response_body, tokens_data)
+    def parse_decrypt_response(response_body)
       result = {}
       response_data = JSON.parse(response_body)
-      
-      response_data['tokens'].each_with_index do |token_data, index|
-        original_data = tokens_data[index]
-        key = generate_key(original_data)
-        result[key] = token_data['value']
+
+      response_data['data'].each do |token_data|
+        result[token_data['token']] = token_data['decrypted_value']
       end
-      
+
       result
     end
 
     def generate_key(token_data)
-      "#{token_data[:entity_type]}:#{token_data[:entity_id]}:#{token_data[:field_name]}"
+      "#{token_data['entity_type']}:#{token_data['entity_id']}:#{token_data['pii_type']}"
     end
 
     def handle_error_response(response)
