@@ -1,0 +1,17 @@
+/.bundle/
+/.yardoc
+/_yardoc/
+/coverage/
+/doc/
+/pkg/
+/spec/reports/
+/tmp/
+/spec/gemfiles/*.lock
+/spec/dummy/db/*.sqlite3
+/spec/dummy/db/*.sqlite3-journal
+/spec/dummy/log/*.log
+/spec/dummy/tmp/
+/spec/dummy/.sass-cache
+*.gem
+Gemfile.lock
+.rspec_status 
