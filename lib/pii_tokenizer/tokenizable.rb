@@ -195,22 +195,11 @@ module PiiTokenizer
       encrypted_value = read_attribute(field)
       return nil if encrypted_value.blank?
 
-      # Create a batch of one for this field
-      token_data = [{
-        token: encrypted_value,
-        entity_id: entity_id,
-        entity_type: entity_type,
-        field_name: field.to_s,
-        pii_type: pii_type_for(field)
-      }]
-
-      # Perform decryption
-      decrypted_values = PiiTokenizer.encryption_service.decrypt_batch(token_data)
-      # Use uppercase entity_type to match the key returned by the encryption service
-      key = "#{entity_type.upcase}:#{entity_id}:#{pii_type_for(field)}"
-
-      if decrypted_values.key?(key)
-        decrypted_value = decrypted_values[key]
+      # Just pass the token directly to decrypt_batch
+      token_to_value = PiiTokenizer.encryption_service.decrypt_batch([encrypted_value])
+      
+      if token_to_value.key?(encrypted_value)
+        decrypted_value = token_to_value[encrypted_value]
         cache_decrypted_value(field, decrypted_value)
         return decrypted_value
       end
@@ -226,8 +215,9 @@ module PiiTokenizer
       # Filter to only include tokenized fields
       fields &= self.class.tokenized_fields
 
-      # Collect fields that need decryption
-      tokens_data = []
+      # Map of field to token
+      field_to_token = {}
+      tokens = []
 
       fields.each do |field|
         # Skip if already decrypted and in cache
@@ -237,39 +227,32 @@ module PiiTokenizer
         encrypted_value = read_attribute(field)
         next if encrypted_value.blank?
 
-        tokens_data << {
-          token: encrypted_value,
-          entity_id: entity_id,
-          entity_type: entity_type,
-          field_name: field.to_s,
-          pii_type: pii_type_for(field)
-        }
+        # Store the mapping of field to token
+        field_to_token[field] = encrypted_value
+        tokens << encrypted_value
       end
 
       # Decrypt in a batch
-      return {} if tokens_data.empty?
+      return {} if tokens.empty?
 
-      # Create a mapping of token to decrypted value
-      token_to_value = parse_token_to_value(response.body)
-      
-      # Create result mapping using the original composite keys
+      # Get token to value mapping
+      token_to_value = PiiTokenizer.encryption_service.decrypt_batch(tokens)
+
+      # Update cache with decrypted values and build result
       result = {}
-      tokens_data.each do |td|
-        if token_to_value.key?(td[:token])
-          key = "#{td[:entity_type].upcase}:#{td[:entity_id]}:#{td[:pii_type]}"
-          result[key] = token_to_value[td[:token]]
+
+      fields.each do |field|
+        if field_to_token[field] && token_to_value.key?(field_to_token[field])
+          # We have a decrypted value for this field
+          decrypted_value = token_to_value[field_to_token[field]]
+          cache_decrypted_value(field, decrypted_value)
+          result[field] = decrypted_value
+        else
+          # Use cached value or database value as fallback
+          result[field] = get_cached_decrypted_value(field) || read_attribute(field)
         end
       end
 
-      result
-    end
-
-    def parse_token_to_value(response_body)
-      result = {}
-      response_data = JSON.parse(response_body)
-      response_data['data'].each do |item|
-        result[item['token']] = item['decrypted_value']
-      end
       result
     end
 
@@ -292,3 +275,4 @@ module PiiTokenizer
     end
   end
 end
+

@@ -52,21 +52,29 @@ module PiiTokenizer
 
     # Decrypt multiple tokens in a batch
     #
-    # @param tokens_data [Array<Hash>] Array of data to decrypt
-    #   Each hash should have the keys:
+    # @param tokens_data [Array<Hash>, Array<String>] Array of tokens to decrypt
+    #   If Array<Hash>, each hash should have:
     #   - :token => the encrypted token to decrypt
-    #   - :entity_id => the entity ID for this value (needed for key generation)
-    #   - :entity_type => the entity type (needed for key generation)
-    #   - :pii_type => type of PII data (needed for key generation)
+    #   - :entity_id => the entity ID for this value (for key generation)
+    #   - :entity_type => the entity type (for key generation)
+    #   - :pii_type => type of PII data (for key generation)
+    #   If Array<String>, they are treated as raw tokens
     #
-    # @return [Hash] Mapping of composite keys to decrypted values
+    # @return [Hash] Mapping of composite keys to decrypted values, or token to value if raw tokens provided
     def decrypt_batch(tokens_data)
       return {} if tokens_data.empty?
 
       puts "DEBUG: Decrypt batch called with #{tokens_data.inspect}"
 
-      # Extract just the tokens for the API request
-      tokens = tokens_data.map { |td| td[:token] }
+      # Handle both array of hashes and array of strings
+      if tokens_data.first.is_a?(Hash)
+        # Extract just the tokens for the API request
+        tokens = tokens_data.map { |td| td[:token] }
+      else
+        # Raw tokens provided
+        tokens = tokens_data
+      end
+
       puts "DEBUG: Making API request to #{@configuration.encryption_service_url}/api/v1/tokens/decrypt with tokens: #{tokens.inspect}"
 
       response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
@@ -76,6 +84,12 @@ module PiiTokenizer
       if response.success?
         # Create a mapping of token to decrypted value
         token_to_value = parse_token_to_value(response.body)
+        
+        # If raw tokens were provided, return token -> value mapping
+        if tokens_data.first.is_a?(String)
+          puts "DEBUG: Parsed result: #{token_to_value.inspect}"
+          return token_to_value
+        end
         
         # Create result mapping using the original composite keys
         result = {}
