@@ -33,7 +33,7 @@ module PiiTokenizer
       end
 
       # Define callbacks to encrypt/decrypt fields
-      before_save :encrypt_pii_fields, if: :should_encrypt?
+      before_save :encrypt_pii_fields
       after_find :register_for_decryption
       after_initialize :register_for_decryption
     end
@@ -62,10 +62,10 @@ module PiiTokenizer
         self.pii_types = field_pii_types.transform_keys(&:to_sym)
 
         self.entity_type_proc = if entity_type.is_a?(Proc)
-                                  entity_type
-                                else
-                                  ->(_) { entity_type.to_s }
-                                end
+                                 entity_type
+                               else
+                                 ->(_) { entity_type.to_s }
+                               end
 
         self.entity_id_proc = entity_id
 
@@ -83,6 +83,8 @@ module PiiTokenizer
           instance_variable_set("@original_#{field}", value)
           # Also need to set the attribute for the record to be dirty
           super(value)
+          # Mark the field as changed to ensure it gets encrypted
+          changed_attributes[field.to_s] = read_attribute(field)
         end
       end
 
@@ -112,11 +114,6 @@ module PiiTokenizer
     # Get the pii_type for a field
     def pii_type_for(field)
       self.class.pii_types[field.to_sym]
-    end
-
-    # Check if we should encrypt fields
-    def should_encrypt?
-      !self.class.tokenized_fields.empty? && changed?
     end
 
     # Encrypt all tokenized fields before saving
