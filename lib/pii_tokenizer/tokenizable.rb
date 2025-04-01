@@ -154,7 +154,8 @@ module PiiTokenizer
       # Update the model attributes with encrypted values
       tokens_data.each do |token_data|
         field = token_data[:field_name].to_sym
-        key = "#{token_data[:entity_type]}:#{token_data[:entity_id]}:#{token_data[:pii_type]}"
+        # Use uppercase entity_type to match the key returned by the encryption service
+        key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}"
         
         puts "DEBUG: Looking for key = #{key} in encrypted_values"
 
@@ -205,7 +206,8 @@ module PiiTokenizer
 
       # Perform decryption
       decrypted_values = PiiTokenizer.encryption_service.decrypt_batch(token_data)
-      key = "#{entity_type}:#{entity_id}:#{pii_type_for(field)}"
+      # Use uppercase entity_type to match the key returned by the encryption service
+      key = "#{entity_type.upcase}:#{entity_id}:#{pii_type_for(field)}"
 
       if decrypted_values.key?(key)
         decrypted_value = decrypted_values[key]
@@ -253,7 +255,8 @@ module PiiTokenizer
       result = {}
 
       fields.each do |field|
-        key = "#{entity_type}:#{entity_id}:#{pii_type_for(field)}"
+        # Use uppercase entity_type to match the key returned by the encryption service
+        key = "#{entity_type.upcase}:#{entity_id}:#{pii_type_for(field)}"
 
         if decrypted_values.key?(key)
           decrypted_value = decrypted_values[key]
