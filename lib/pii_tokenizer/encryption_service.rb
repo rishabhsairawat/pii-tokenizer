@@ -55,17 +55,17 @@ module PiiTokenizer
     # @param tokens_data [Array<Hash>] Array of data to decrypt
     #   Each hash should have the keys:
     #   - :token => the encrypted token to decrypt
-    #   - :entity_id => the entity ID for this value
-    #   - :entity_type => the entity type
-    #   - :field_name => name of the field being encrypted
-    #   - :pii_type => type of PII data (optional, used for key generation)
+    #   - :entity_id => the entity ID for this value (needed for key generation)
+    #   - :entity_type => the entity type (needed for key generation)
+    #   - :pii_type => type of PII data (needed for key generation)
     #
-    # @return [Hash] Mapping of token keys to decrypted values
+    # @return [Hash] Mapping of composite keys to decrypted values
     def decrypt_batch(tokens_data)
       return {} if tokens_data.empty?
 
       puts "DEBUG: Decrypt batch called with #{tokens_data.inspect}"
 
+      # Extract just the tokens for the API request
       tokens = tokens_data.map { |td| td[:token] }
       puts "DEBUG: Making API request to #{@configuration.encryption_service_url}/api/v1/tokens/decrypt with tokens: #{tokens.inspect}"
 
@@ -74,7 +74,18 @@ module PiiTokenizer
       puts "DEBUG: Response status: #{response.status}, body: #{response.body}"
 
       if response.success?
-        result = parse_decrypt_response(response.body, tokens_data)
+        # Create a mapping of token to decrypted value
+        token_to_value = parse_token_to_value(response.body)
+        
+        # Create result mapping using the original composite keys
+        result = {}
+        tokens_data.each do |td|
+          if token_to_value.key?(td[:token])
+            key = "#{td[:entity_type].upcase}:#{td[:entity_id]}:#{td[:pii_type]}"
+            result[key] = token_to_value[td[:token]]
+          end
+        end
+        
         puts "DEBUG: Parsed result: #{result.inspect}"
         result
       else
@@ -102,24 +113,13 @@ module PiiTokenizer
       result
     end
 
-    def parse_decrypt_response(response_body, original_tokens_data)
+    # Parse the decrypt response to create a mapping of token to decrypted value
+    def parse_token_to_value(response_body)
       result = {}
       response_data = JSON.parse(response_body)
 
-      # Create a mapping of token to original request data
-      token_to_data = {}
-      original_tokens_data.each do |td|
-        token_to_data[td[:token]] = td
-      end
-
-      response_data['data'].each do |token_data|
-        token = token_data['token']
-        original_data = token_to_data[token]
-
-        if original_data
-          key = "#{original_data[:entity_type].upcase}:#{original_data[:entity_id]}:#{original_data[:pii_type]}"
-          result[key] = token_data['decrypted_value']
-        end
+      response_data['data'].each do |item|
+        result[item['token']] = item['decrypted_value']
       end
 
       result
