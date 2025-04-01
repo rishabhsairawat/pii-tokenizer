@@ -83,8 +83,6 @@ module PiiTokenizer
           instance_variable_set("@original_#{field}", value)
           # Also need to set the attribute for the record to be dirty
           super(value)
-          # Mark the field as changed to ensure it gets encrypted
-          changed_attributes[field.to_s] = read_attribute(field)
         end
       end
 
@@ -118,6 +116,9 @@ module PiiTokenizer
 
     # Encrypt all tokenized fields before saving
     def encrypt_pii_fields
+      puts "DEBUG: encrypt_pii_fields called for #{self.class.name}"
+      puts "DEBUG: tokenized_fields = #{self.class.tokenized_fields.inspect}"
+      
       return if self.class.tokenized_fields.empty?
 
       # Collect fields that need encryption
@@ -128,6 +129,9 @@ module PiiTokenizer
         value = instance_variable_get("@original_#{field}")
         # If no original value is set, use the current attribute value
         value ||= read_attribute(field)
+        
+        puts "DEBUG: Processing field #{field}, original value: #{instance_variable_defined?("@original_#{field}")}, value: #{value.inspect}"
+        
         next if value.blank?
 
         tokens_data << {
@@ -139,17 +143,24 @@ module PiiTokenizer
         }
       end
 
+      puts "DEBUG: Collected tokens_data = #{tokens_data.inspect}"
+
       # Encrypt in a batch
       return if tokens_data.empty?
 
       encrypted_values = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
+      puts "DEBUG: Received encrypted_values = #{encrypted_values.inspect}"
 
       # Update the model attributes with encrypted values
       tokens_data.each do |token_data|
         field = token_data[:field_name].to_sym
         key = "#{token_data[:entity_type]}:#{token_data[:entity_id]}:#{token_data[:pii_type]}"
+        
+        puts "DEBUG: Looking for key = #{key} in encrypted_values"
 
         next unless encrypted_values.key?(key)
+        
+        puts "DEBUG: Found key, storing encrypted value for field #{field}"
 
         # Store the encrypted value in the database column
         write_attribute(field, encrypted_values[key])

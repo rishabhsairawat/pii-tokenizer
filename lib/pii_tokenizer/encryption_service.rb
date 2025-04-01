@@ -21,6 +21,8 @@ module PiiTokenizer
     def encrypt_batch(tokens_data)
       return {} if tokens_data.empty?
 
+      puts "DEBUG: Encrypt batch called with #{tokens_data.inspect}"
+
       request_data = tokens_data.map do |token_data|
         {
           entity_type: token_data[:entity_type],
@@ -30,13 +32,19 @@ module PiiTokenizer
         }
       end
 
+      puts "DEBUG: Making API request to #{@configuration.encryption_service_url}/api/v1/tokens/bulk with data: #{request_data.inspect}"
+
       response = api_client.post('/api/v1/tokens/bulk') do |req|
         req.body = request_data.to_json
         req.headers['Content-Type'] = 'application/json'
       end
 
+      puts "DEBUG: Response status: #{response.status}, body: #{response.body}"
+
       if response.success?
-        parse_encrypt_response(response.body)
+        result = parse_encrypt_response(response.body)
+        puts "DEBUG: Parsed result: #{result.inspect}"
+        result
       else
         handle_error_response(response)
       end
@@ -56,11 +64,19 @@ module PiiTokenizer
     def decrypt_batch(tokens_data)
       return {} if tokens_data.empty?
 
+      puts "DEBUG: Decrypt batch called with #{tokens_data.inspect}"
+
       tokens = tokens_data.map { |td| td[:token] }
+      puts "DEBUG: Making API request to #{@configuration.encryption_service_url}/api/v1/tokens/decrypt with tokens: #{tokens.inspect}"
+
       response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
 
+      puts "DEBUG: Response status: #{response.status}, body: #{response.body}"
+
       if response.success?
-        parse_decrypt_response(response.body, tokens_data)
+        result = parse_decrypt_response(response.body, tokens_data)
+        puts "DEBUG: Parsed result: #{result.inspect}"
+        result
       else
         handle_error_response(response)
       end
