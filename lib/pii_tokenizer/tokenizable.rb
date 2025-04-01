@@ -33,7 +33,7 @@ module PiiTokenizer
       end
 
       # Define callbacks to encrypt/decrypt fields
-      before_save :encrypt_pii_fields
+      before_save :encrypt_pii_fields, if: :should_encrypt?
       after_find :register_for_decryption
       after_initialize :register_for_decryption
     end
@@ -112,6 +112,11 @@ module PiiTokenizer
     # Get the pii_type for a field
     def pii_type_for(field)
       self.class.pii_types[field.to_sym]
+    end
+
+    # Check if we should encrypt fields
+    def should_encrypt?
+      !self.class.tokenized_fields.empty? && changed?
     end
 
     # Encrypt all tokenized fields before saving
