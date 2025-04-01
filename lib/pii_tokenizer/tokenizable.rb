@@ -75,6 +75,28 @@ module PiiTokenizer
           define_field_writer(field)
         end
       end
+
+      # Override writer method to store original value
+      def define_field_writer(field)
+        define_method("#{field}=") do |value|
+          # Store the unencrypted value in the object, will be encrypted on save
+          instance_variable_set("@original_#{field}", value)
+          # Also need to set the attribute for the record to be dirty
+          super(value)
+        end
+      end
+
+      # Override reader method to decrypt on access
+      def define_field_reader(field)
+        define_method(field) do
+          # If we have an original value set (from a write), return that
+          if instance_variable_defined?("@original_#{field}")
+            return instance_variable_get("@original_#{field}")
+          end
+          # Otherwise, decrypt the stored value
+          decrypt_field(field)
+        end
+      end
     end
 
     # Get the entity type for this record
@@ -249,28 +271,6 @@ module PiiTokenizer
       return nil unless self.class.decryption_cache[object_id]
 
       self.class.decryption_cache[object_id][field.to_sym]
-    end
-
-    # Override writer method to store original value
-    def define_field_writer(field)
-      define_method("#{field}=") do |value|
-        # Store the unencrypted value in the object, will be encrypted on save
-        instance_variable_set("@original_#{field}", value)
-        # Also need to set the attribute for the record to be dirty
-        super(value)
-      end
-    end
-
-    # Override reader method to decrypt on access
-    def define_field_reader(field)
-      define_method(field) do
-        # If we have an original value set (from a write), return that
-        if instance_variable_defined?("@original_#{field}")
-          return instance_variable_get("@original_#{field}")
-        end
-        # Otherwise, decrypt the stored value
-        decrypt_field(field)
-      end
     end
   end
 end
