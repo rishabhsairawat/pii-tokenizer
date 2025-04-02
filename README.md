@@ -60,8 +60,85 @@ end
 3. **Add token columns** to your database:
 
 ```bash
+# Generate a migration to add token columns for specified fields
 $ rails generate pii_tokenizer:token_columns user first_name last_name email ssn
 $ rails db:migrate
+```
+
+This generates a migration that adds columns like `first_name_token`, `last_name_token`, etc.
+
+4. **Add indices to token columns** (optional, but recommended for query performance):
+
+```bash
+# Generate a migration to add indices to the token columns
+$ rails generate pii_tokenizer:token_indices user first_name last_name email ssn
+$ rails db:migrate
+```
+
+The token indices generator creates optimized indices, including concurrent index creation for PostgreSQL.
+
+## Migration Generators
+
+### TokenColumns Generator
+
+Creates a migration to add token columns to your database table:
+
+```bash
+$ rails generate pii_tokenizer:token_columns MODEL_NAME FIELD1 FIELD2 ...
+```
+
+For example, running:
+
+```bash
+$ rails generate pii_tokenizer:token_columns user first_name last_name email
+```
+
+Generates a migration like:
+
+```ruby
+class AddUserTokenColumns < ActiveRecord::Migration[6.0]
+  def change
+    add_column :users, :first_name_token, :string
+    add_column :users, :last_name_token, :string
+    add_column :users, :email_token, :string
+  end
+end
+```
+
+### TokenIndices Generator
+
+Creates a migration to add indices to your token columns:
+
+```bash
+$ rails generate pii_tokenizer:token_indices MODEL_NAME FIELD1 FIELD2 ...
+```
+
+For example, running:
+
+```bash
+$ rails generate pii_tokenizer:token_indices user first_name last_name email
+```
+
+Generates a migration with database-specific optimizations:
+
+```ruby
+class AddUserTokenIndices < ActiveRecord::Migration[6.0]
+  # Disable DDL transactions for PostgreSQL concurrent indexing
+  disable_ddl_transaction!
+
+  def change
+    # Create indices concurrently on PostgreSQL, or normally on other databases
+    if connection.adapter_name.downcase.include?('postgresql')
+      add_index :users, :first_name_token, algorithm: :concurrently
+      add_index :users, :last_name_token, algorithm: :concurrently
+      add_index :users, :email_token, algorithm: :concurrently
+    else
+      add_index :users, :first_name_token
+      add_index :users, :last_name_token
+      add_index :users, :email_token
+    end
+  end
+end
 ```
 
 ## Comprehensive Documentation
