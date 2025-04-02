@@ -21,8 +21,6 @@ module PiiTokenizer
     def encrypt_batch(tokens_data)
       return {} if tokens_data.empty?
 
-      puts "DEBUG: Encrypt batch called with #{tokens_data.inspect}"
-
       request_data = tokens_data.map do |token_data|
         {
           entity_type: token_data[:entity_type],
@@ -32,19 +30,13 @@ module PiiTokenizer
         }
       end
 
-      puts "DEBUG: Making API request to #{@configuration.encryption_service_url}/api/v1/tokens/bulk with data: #{request_data.inspect}"
-
       response = api_client.post('/api/v1/tokens/bulk') do |req|
         req.body = request_data.to_json
         req.headers['Content-Type'] = 'application/json'
       end
 
-      puts "DEBUG: Response status: #{response.status}, body: #{response.body}"
-
       if response.success?
-        result = parse_encrypt_response(response.body)
-        puts "DEBUG: Parsed result: #{result.inspect}"
-        result
+        parse_encrypt_response(response.body)
       else
         handle_error_response(response)
       end
@@ -52,58 +44,51 @@ module PiiTokenizer
 
     # Decrypt multiple tokens in a batch
     #
-    # @param tokens_data [Array<Hash>, Array<String>] Array of tokens to decrypt
+    # @param tokens_data [Array<String>, Array<Hash>, String] Tokens to decrypt
     #   If Array<Hash>, each hash should have:
     #   - :token => the encrypted token to decrypt
-    #   - :entity_id => the entity ID for this value (for key generation)
-    #   - :entity_type => the entity type (for key generation)
-    #   - :pii_type => type of PII data (for key generation)
-    #   If Array<String>, they are treated as raw tokens
+    #   - :entity_id => the entity ID for this value
+    #   - :entity_type => the entity type
+    #   - :pii_type => type of PII data
     #
-    # @return [Hash] Mapping of composite keys to decrypted values, or token to value if raw tokens provided
+    # @return [Hash] Mapping of tokens to decrypted values, or entity keys to values if hashes provided
     def decrypt_batch(tokens_data)
-      return {} if tokens_data.empty?
+      return {} if tokens_data.nil? || (tokens_data.is_a?(Array) && tokens_data.empty?)
 
-      puts "DEBUG: Decrypt batch called with #{tokens_data.inspect}"
-
-      # Handle both array of hashes and array of strings
-      if tokens_data.first.is_a?(Hash)
-        # Extract just the tokens for the API request
+      # Handle different input formats
+      if tokens_data.is_a?(Array) && tokens_data.first.is_a?(Hash)
+        # Legacy format with array of hashes with token, entity_id, etc.
         tokens = tokens_data.map { |td| td[:token] }
-      else
-        # Raw tokens provided
-        tokens = tokens_data
-      end
 
-      puts "DEBUG: Making API request to #{@configuration.encryption_service_url}/api/v1/tokens/decrypt with tokens: #{tokens.inspect}"
+        response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
 
-      response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
+        if response.success?
+          token_to_value = parse_token_to_value(response.body)
 
-      puts "DEBUG: Response status: #{response.status}, body: #{response.body}"
-
-      if response.success?
-        # Create a mapping of token to decrypted value
-        token_to_value = parse_token_to_value(response.body)
-        
-        # If raw tokens were provided, return token -> value mapping
-        if tokens_data.first.is_a?(String)
-          puts "DEBUG: Parsed result: #{token_to_value.inspect}"
-          return token_to_value
-        end
-        
-        # Create result mapping using the original composite keys
-        result = {}
-        tokens_data.each do |td|
-          if token_to_value.key?(td[:token])
-            key = "#{td[:entity_type].upcase}:#{td[:entity_id]}:#{td[:pii_type]}"
-            result[key] = token_to_value[td[:token]]
+          # Map back to entity keys for compatibility with existing code
+          result = {}
+          tokens_data.each do |td|
+            if token_to_value.key?(td[:token])
+              key = "#{td[:entity_type].upcase}:#{td[:entity_id]}:#{td[:pii_type]}"
+              result[key] = token_to_value[td[:token]]
+            end
           end
+
+          result
+        else
+          handle_error_response(response)
         end
-        
-        puts "DEBUG: Parsed result: #{result.inspect}"
-        result
       else
-        handle_error_response(response)
+        # New format with just tokens
+        tokens = tokens_data.is_a?(Array) ? tokens_data : [tokens_data]
+
+        response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
+
+        if response.success?
+          parse_token_to_value(response.body)
+        else
+          handle_error_response(response)
+        end
       end
     end
 
@@ -140,7 +125,7 @@ module PiiTokenizer
     end
 
     def generate_key(token_data)
-      "#{token_data['entity_type']}:#{token_data['entity_id']}:#{token_data['pii_type']}"
+      "#{token_data['entity_type'].upcase}:#{token_data['entity_id']}:#{token_data['pii_type']}"
     end
 
     def handle_error_response(response)

@@ -34,9 +34,11 @@ RSpec.configure do |config|
 
   # Run each test in a transaction
   config.around do |example|
-    ActiveRecord::Base.transaction do
+    begin
       example.run
-      raise ActiveRecord::Rollback
+    rescue StandardError => e
+      puts "Test failed: #{e.message}"
+      raise e
     end
   end
 
@@ -55,20 +57,32 @@ ActiveRecord::Schema.define do
     t.string :first_name
     t.string :last_name
     t.string :email
-    t.timestamps
+
+    # Add token columns
+    t.string :first_name_token
+    t.string :last_name_token
+    t.string :email_token
   end
 
   create_table :internal_users, force: true do |t|
     t.string :first_name
     t.string :last_name
     t.string :role
-    t.timestamps
+
+    # Add token columns
+    t.string :first_name_token
+    t.string :last_name_token
   end
 
-  create_table :contacts do |t|
+  create_table :contacts, force: true do |t|
     t.string :full_name
     t.string :phone_number
     t.string :email_address
+
+    # Add token columns
+    t.string :full_name_token
+    t.string :phone_number_token
+    t.string :email_address_token
   end
 end
 
@@ -76,9 +90,15 @@ end
 class User < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
-  tokenize_pii fields: %i[first_name last_name email],
+  tokenize_pii fields: {
+    first_name: 'FIRST_NAME',
+    last_name: 'LAST_NAME',
+    email: 'EMAIL'
+  },
                entity_type: 'customer',
-               entity_id: ->(record) { "User_customer_#{record.id}" }
+               entity_id: ->(record) { "User_customer_#{record.id}" },
+               dual_write: false,
+               read_from_token: true
 end
 
 class InternalUser < ActiveRecord::Base
@@ -86,10 +106,11 @@ class InternalUser < ActiveRecord::Base
 
   tokenize_pii fields: %i[first_name last_name],
                entity_type: 'internal_staff',
-               entity_id: ->(record) { "InternalUser_#{record.id}_#{record.role}" }
+               entity_id: ->(record) { "InternalUser_#{record.id}_#{record.role}" },
+               dual_write: false,
+               read_from_token: true
 end
 
-# Model using custom pii_types
 class Contact < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
@@ -99,5 +120,7 @@ class Contact < ActiveRecord::Base
     email_address: 'EMAIL'
   },
                entity_type: 'contact',
-               entity_id: ->(record) { "Contact_#{record.id}" }
+               entity_id: ->(record) { "Contact_#{record.id}" },
+               dual_write: false,
+               read_from_token: true
 end

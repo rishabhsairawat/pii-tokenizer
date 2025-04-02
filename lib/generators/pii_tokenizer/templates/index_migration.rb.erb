@@ -1,0 +1,10 @@
+class Add<%= migration_class_name %>TokenIndices < ActiveRecord::Migration<%= migration_version %>
+  # Disable transaction because concurrent index creation cannot run in a transaction
+  disable_ddl_transaction!
+
+  def change
+    <% attributes.each do |attribute| %>
+    add_index :<%= table_name %>, :<%= attribute.name %>_token, algorithm: :concurrently
+    <% end %>
+  end
+end 
