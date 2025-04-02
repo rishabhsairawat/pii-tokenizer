@@ -96,7 +96,7 @@ $ rails generate pii_tokenizer:token_columns user first_name last_name email
 Generates a migration like:
 
 ```ruby
-class AddUserTokenColumns < ActiveRecord::Migration[6.0]
+class AddUserTokenColumns < ActiveRecord::Migration
   def change
     add_column :users, :first_name_token, :string
     add_column :users, :last_name_token, :string
@@ -122,7 +122,7 @@ $ rails generate pii_tokenizer:token_indices user first_name last_name email
 Generates a migration with database-specific optimizations:
 
 ```ruby
-class AddUserTokenIndices < ActiveRecord::Migration[6.0]
+class AddUserTokenIndices < ActiveRecord::Migration
   # Disable DDL transactions for PostgreSQL concurrent indexing
   disable_ddl_transaction!
 
