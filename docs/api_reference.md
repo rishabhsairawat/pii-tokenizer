@@ -278,6 +278,8 @@ PiiTokenizer can be configured with an initializer:
 PiiTokenizer.configure do |config|
   config.encryption_service_url = ENV['ENCRYPTION_SERVICE_URL']
   config.batch_size = 100  # Default batch size for operations
+  config.logger = Rails.logger
+  config.log_level = :debug
 end
 ```
 
@@ -286,4 +288,26 @@ end
 | Option | Description | Default |
 |--------|-------------|---------|
 | `encryption_service_url` | URL of the encryption service | Required |
-| `batch_size` | Default batch size for operations | 100 | 
+| `batch_size` | Default batch size for operations | 100 |
+| `logger` | Custom logger instance | `nil` (uses STDOUT) |
+| `log_level` | Log level (:debug, :info, :warn, :error, :fatal) | `:info` |
+
+## Logging
+
+PiiTokenizer provides logging for all API calls to the encryption service:
+
+```ruby
+# config/initializers/pii_tokenizer.rb
+PiiTokenizer.configure do |config|
+  # Use Rails logger instead of default STDOUT logger
+  config.logger = Rails.logger
+  
+  # Set to debug for more verbose output
+  config.log_level = :debug
+end
+```
+
+The logged information includes:
+- Request method, URL, and sanitized payload (sensitive data is redacted)
+- Response status code and sanitized response body
+- Error details when requests fail 

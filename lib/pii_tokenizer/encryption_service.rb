@@ -1,10 +1,20 @@
 require 'faraday'
 require 'json'
+require 'logger'
 
 module PiiTokenizer
   class EncryptionService
     def initialize(configuration)
       @configuration = configuration
+      @logger = configuration.logger || Logger.new(STDOUT)
+      @logger.level = configuration.log_level || Logger::INFO if @logger.respond_to?(:level=)
+      
+      # Only set formatter if this is our own logger instance
+      if configuration.logger.nil? && @logger.respond_to?(:formatter=)
+        @logger.formatter = proc do |severity, datetime, progname, msg|
+          "[#{datetime}] #{severity} -- PiiTokenizer: #{msg}\n"
+        end
+      end
     end
 
     # Encrypt multiple values in a batch
@@ -30,10 +40,14 @@ module PiiTokenizer
         }
       end
 
+      log_request('POST', '/api/v1/tokens/bulk', request_data)
+      
       response = api_client.post('/api/v1/tokens/bulk') do |req|
         req.body = request_data.to_json
         req.headers['Content-Type'] = 'application/json'
       end
+
+      log_response(response)
 
       if response.success?
         parse_encrypt_response(response.body)
@@ -60,7 +74,11 @@ module PiiTokenizer
         # Legacy format with array of hashes with token, entity_id, etc.
         tokens = tokens_data.map { |td| td[:token] }
 
+        log_request('GET', '/api/v1/tokens/decrypt', { tokens: tokens })
+        
         response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
+        
+        log_response(response)
 
         if response.success?
           token_to_value = parse_token_to_value(response.body)
@@ -82,7 +100,11 @@ module PiiTokenizer
         # New format with just tokens
         tokens = tokens_data.is_a?(Array) ? tokens_data : [tokens_data]
 
+        log_request('GET', '/api/v1/tokens/decrypt', { tokens: tokens })
+        
         response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
+        
+        log_response(response)
 
         if response.success?
           parse_token_to_value(response.body)
@@ -93,6 +115,52 @@ module PiiTokenizer
     end
 
     private
+
+    def log_request(method, path, data)
+      # Sanitize sensitive data for logging
+      safe_data = sanitize_data_for_logging(data)
+      @logger.info("REQUEST: #{method} #{@configuration.encryption_service_url}#{path} - Payload: #{safe_data.to_json}")
+    end
+
+    def log_response(response)
+      status = response.status
+      safe_body = sanitize_response_for_logging(response.body)
+      @logger.info("RESPONSE: HTTP #{status} - Body: #{safe_body}")
+    end
+
+    def sanitize_data_for_logging(data)
+      if data.is_a?(Array)
+        data.map { |item| sanitize_data_for_logging(item) }
+      elsif data.is_a?(Hash)
+        sanitized = {}
+        data.each do |k, v|
+          if k.to_s == 'pii_field' || k.to_s == 'value'
+            sanitized[k] = 'REDACTED'
+          else
+            sanitized[k] = v
+          end
+        end
+        sanitized
+      else
+        data
+      end
+    end
+
+    def sanitize_response_for_logging(body)
+      return body unless body.is_a?(String) && !body.empty?
+      
+      begin
+        data = JSON.parse(body)
+        if data.key?('data') && data['data'].is_a?(Array)
+          data['data'].each do |item|
+            item['decrypted_value'] = 'REDACTED' if item.key?('decrypted_value')
+          end
+        end
+        data.to_json
+      rescue JSON::ParserError
+        'Non-JSON response'
+      end
+    end
 
     def api_client
       @api_client ||= Faraday.new(url: @configuration.encryption_service_url) do |conn|
