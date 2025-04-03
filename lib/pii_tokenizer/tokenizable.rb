@@ -256,7 +256,10 @@ module PiiTokenizer
                 instance_variable_get("@original_#{field}") :
                 read_attribute(field)
 
-        next if value.blank?
+        # Skip nil values
+        next if value.nil?
+        # Skip empty values
+        next if value.respond_to?(:blank?) && value.blank?
 
         # Get the PII type for this field
         pii_type = self.class.pii_types[field.to_s]
@@ -317,25 +320,41 @@ module PiiTokenizer
       field_sym = field.to_sym
       return nil unless self.class.tokenized_fields.include?(field_sym)
 
-      # Get token column name
+      # Check cache first
+      if defined?(@field_decryption_cache) && @field_decryption_cache.is_a?(Hash) && @field_decryption_cache.key?(field_sym)
+        return @field_decryption_cache[field_sym]
+      end
+
+      # Initialize field_decryption_cache if needed
+      @field_decryption_cache ||= {}
+
+      # Direct access to instance variables to avoid getter method recursion
       token_column = "#{field}_token"
 
-      # Get the encrypted value
-      encrypted_value = if self.class.read_from_token_column && respond_to?(token_column) && self[token_column].present?
-                          self[token_column]
-                        else
-                          # Fallback to original column for backward compatibility
-                          read_attribute(field)
-                        end
+      # Get the encrypted value directly from attributes hash if available
+      # or use read_attribute which avoids getter methods
+      encrypted_value = nil
 
-      return nil if encrypted_value.blank?
-
-      # Get decryption from cache or decrypt it
-      field_decryption_cache[field_sym] ||= begin
-        # Decrypt the encrypted value and cache it
-        result = PiiTokenizer.encryption_service.decrypt_batch([encrypted_value])
-        result[encrypted_value] || read_attribute(field) # Fallback to original value if decryption fails
+      if self.class.read_from_token_column
+        encrypted_value = read_attribute(token_column)
       end
+
+      # Try original field if token column is empty/nil
+      if encrypted_value.nil? || (encrypted_value.respond_to?(:empty?) && encrypted_value.empty?)
+        encrypted_value = read_attribute(field)
+      end
+
+      # Return nil for nil/blank values
+      return nil if encrypted_value.nil? || (encrypted_value.respond_to?(:empty?) && encrypted_value.empty?)
+
+      # Decrypt the value
+      result = PiiTokenizer.encryption_service.decrypt_batch([encrypted_value])
+      decrypted_value = result[encrypted_value] || read_attribute(field)
+
+      # Cache the decrypted value
+      @field_decryption_cache[field_sym] = decrypted_value
+
+      decrypted_value
     end
 
     # Decrypt multiple tokenized fields at once

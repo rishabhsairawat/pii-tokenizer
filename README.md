@@ -260,4 +260,140 @@ User.preload_decrypted_fields(users, :first_name, :last_name, :email)
 
 ## License
 
-This gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT). 
+This gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+
+## Testing Your Application
+
+When testing an application that uses PiiTokenizer, you'll want to avoid making real API calls to your encryption service. Here are strategies for effective testing:
+
+### Mock the Encryption Service
+
+```ruby
+# In your test_helper.rb or spec_helper.rb
+RSpec.configure do |config|
+  config.before(:each) do
+    # Create a mock encryption service
+    mock_encryption_service = instance_double(PiiTokenizer::EncryptionService)
+    
+    # Set up mock behaviors for encrypt_batch
+    allow(mock_encryption_service).to receive(:encrypt_batch) do |data|
+      data.each_with_object({}) do |item, result|
+        key = "#{item[:entity_type].upcase}:#{item[:entity_id]}:#{item[:pii_type]}"
+        result[key] = "encrypted_#{item[:value]}"
+      end
+    end
+    
+    # Set up mock behaviors for decrypt_batch
+    allow(mock_encryption_service).to receive(:decrypt_batch) do |tokens|
+      tokens = [tokens] unless tokens.is_a?(Array)
+      
+      tokens.each_with_object({}) do |token, result|
+        if token.start_with?("encrypted_")
+          result[token] = token.sub("encrypted_", "")
+        end
+      end
+    end
+    
+    # Inject the mock into PiiTokenizer
+    allow(PiiTokenizer).to receive(:encryption_service).and_return(mock_encryption_service)
+  end
+end
+```
+
+### Test Batch Processing
+
+When testing code that uses batch decryption, verify that it makes a single API call instead of multiple calls:
+
+```ruby
+it "decrypts multiple records in batch" do
+  users = create_list(:user, 3)
+  
+  # Expect a single decrypt_batch call with all tokens
+  expect(PiiTokenizer.encryption_service).to receive(:decrypt_batch)
+    .once
+    .with(array_including(users.map { |u| u.email_token }))
+    .and_call_original
+    
+  # This should use batch decryption
+  result = User.where(id: users.map(&:id))
+              .include_decrypted_fields(:email)
+              .map(&:email)
+              
+  expect(result.size).to eq(3)
+end
+```
+
+### Testing with WebMock
+
+If you prefer to test the actual HTTP requests, use WebMock to intercept API calls:
+
+```ruby
+# In your test_helper.rb or spec_helper.rb
+require 'webmock/rspec'
+
+RSpec.configure do |config|
+  config.before(:each) do
+    # Stub encrypt endpoint
+    stub_request(:post, "#{ENV['ENCRYPTION_SERVICE_URL']}/api/v1/tokens/bulk")
+      .to_return do |request|
+        data = JSON.parse(request.body)
+        response_data = data.map do |item|
+          {
+            token: "encrypted_#{item['pii_field']}",
+            entity_type: item['entity_type'],
+            entity_id: item['entity_id'],
+            pii_type: item['pii_type']
+          }
+        end
+        
+        { 
+          status: 200, 
+          body: { data: response_data }.to_json,
+          headers: { 'Content-Type' => 'application/json' }
+        }
+      end
+      
+    # Stub decrypt endpoint
+    stub_request(:get, /#{ENV['ENCRYPTION_SERVICE_URL']}\/api\/v1\/tokens\/decrypt.*/)
+      .to_return do |request|
+        uri = Addressable::URI.parse(request.uri)
+        tokens = uri.query_values['tokens'] || []
+        tokens = [tokens] unless tokens.is_a?(Array)
+        
+        response_data = tokens.map do |token|
+          {
+            token: token,
+            decrypted_value: token.sub('encrypted_', '')
+          }
+        end
+        
+        { 
+          status: 200, 
+          body: { data: response_data }.to_json,
+          headers: { 'Content-Type' => 'application/json' }
+        }
+      end
+  end
+end
+```
+
+### Code Coverage
+
+PiiTokenizer maintains high test coverage to ensure reliability. To run the test suite with code coverage reporting:
+
+```bash
+# Install dependencies
+bundle install
+
+# Run tests with coverage reporting
+COVERAGE=true bundle exec rspec
+```
+
+After running the tests with coverage enabled, you'll find a detailed HTML report in the `coverage` directory. Open `coverage/index.html` in your browser to view:
+
+- Overall code coverage percentage
+- File-by-file coverage breakdown
+- Line-by-line coverage visualization
+- Missed lines not covered by tests
+
+The code coverage threshold is set to 95% to ensure comprehensive test coverage. 

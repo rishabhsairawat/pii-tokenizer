@@ -1,4 +1,27 @@
 require 'bundler/setup'
+require 'simplecov'
+
+# Configure SimpleCov for test coverage reporting
+if ENV['COVERAGE'] == 'true'
+  SimpleCov.start do
+    add_filter '/spec/'
+    add_filter '/vendor/'
+
+    add_group 'Core', 'lib/pii_tokenizer'
+    add_group 'Libraries', 'lib'
+
+    # Set a minimum coverage threshold
+    minimum_coverage 90
+
+    # Show coverage in console output
+    formatter SimpleCov::Formatter::MultiFormatter.new([
+                                                         SimpleCov::Formatter::HTMLFormatter
+                                                       ])
+  end
+
+  puts 'SimpleCov enabled - generating coverage report'
+end
+
 require 'pii_tokenizer'
 require 'active_record'
 begin
@@ -13,6 +36,32 @@ begin
   WebMock.disable_net_connect!(allow_localhost: true)
 rescue LoadError
   # Webmock is optional for testing
+end
+
+# Add a test implementation of callback methods
+module CallbackMethods
+  def before_save(method_name)
+    define_method(:run_before_save) do
+      send(method_name)
+    end
+  end
+
+  def after_find(method_name)
+    define_method(:run_after_find) do
+      send(method_name)
+    end
+  end
+
+  def after_initialize(method_name)
+    define_method(:run_after_initialize) do
+      send(method_name)
+    end
+  end
+end
+
+# Monkey patch Class to handle ActiveRecord callbacks in basic Ruby classes
+class Class
+  include CallbackMethods
 end
 
 # Set up an in-memory database for testing
@@ -44,9 +93,13 @@ RSpec.configure do |config|
 
   # Configure the PiiTokenizer for testing
   config.before(:suite) do
+    # Create a null logger to disable logging during tests
+    null_logger = Logger.new(File.open(File::NULL, 'w'))
+
     PiiTokenizer.configure do |config|
       config.encryption_service_url = 'http://localhost:8000'
       config.batch_size = 5
+      config.logger = null_logger
     end
   end
 end
