@@ -8,10 +8,10 @@ module PiiTokenizer
       @configuration = configuration
       @logger = configuration.logger || Logger.new(STDOUT)
       @logger.level = configuration.log_level || Logger::INFO if @logger.respond_to?(:level=)
-      
+
       # Only set formatter if this is our own logger instance
       if configuration.logger.nil? && @logger.respond_to?(:formatter=)
-        @logger.formatter = proc do |severity, datetime, progname, msg|
+        @logger.formatter = proc do |severity, datetime, _progname, msg|
           "[#{datetime}] #{severity} -- PiiTokenizer: #{msg}\n"
         end
       end
@@ -41,7 +41,7 @@ module PiiTokenizer
       end
 
       log_request('POST', '/api/v1/tokens/bulk', request_data)
-      
+
       response = api_client.post('/api/v1/tokens/bulk') do |req|
         req.body = request_data.to_json
         req.headers['Content-Type'] = 'application/json'
@@ -75,9 +75,9 @@ module PiiTokenizer
         tokens = tokens_data.map { |td| td[:token] }
 
         log_request('GET', '/api/v1/tokens/decrypt', { tokens: tokens })
-        
+
         response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
-        
+
         log_response(response)
 
         if response.success?
@@ -101,9 +101,9 @@ module PiiTokenizer
         tokens = tokens_data.is_a?(Array) ? tokens_data : [tokens_data]
 
         log_request('GET', '/api/v1/tokens/decrypt', { tokens: tokens })
-        
+
         response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
-        
+
         log_response(response)
 
         if response.success?
@@ -134,11 +134,11 @@ module PiiTokenizer
       elsif data.is_a?(Hash)
         sanitized = {}
         data.each do |k, v|
-          if k.to_s == 'pii_field' || k.to_s == 'value'
-            sanitized[k] = 'REDACTED'
-          else
-            sanitized[k] = v
-          end
+          sanitized[k] = if k.to_s == 'pii_field' || k.to_s == 'value'
+                           'REDACTED'
+                         else
+                           v
+                         end
         end
         sanitized
       else
@@ -148,7 +148,7 @@ module PiiTokenizer
 
     def sanitize_response_for_logging(body)
       return body unless body.is_a?(String) && !body.empty?
-      
+
       begin
         data = JSON.parse(body)
         if data.key?('data') && data['data'].is_a?(Array)

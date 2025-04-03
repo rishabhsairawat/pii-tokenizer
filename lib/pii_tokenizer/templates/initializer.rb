@@ -10,7 +10,7 @@ PiiTokenizer.configure do |config|
   # Logging configuration
   # By default, logs to STDOUT. You can set your own logger:
   # config.logger = Rails.logger
-  
+
   # Set the log level (debug, info, warn, error, fatal)
   # config.log_level = :info
 end

@@ -4,7 +4,8 @@ require 'webmock/rspec'
 
 RSpec.describe PiiTokenizer::EncryptionService do
   let(:url) { 'https://encryption-service.example.com' }
-  let(:config) { double('Configuration', encryption_service_url: url, batch_size: 10) }
+  let(:logger) { double('Logger', info: nil) }
+  let(:config) { double('Configuration', encryption_service_url: url, batch_size: 10, logger: nil, log_level: :info) }
   let(:service) { described_class.new(config) }
 
   # Set up WebMock stubs for common requests

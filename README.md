@@ -176,7 +176,9 @@ class User < ActiveRecord::Base
     email: 'EMAIL'
   },
   entity_type: 'USER',
-  entity_id: ->(record) { record.id.to_s }
+  entity_id: ->(record) { record.id.to_s },
+  dual_write: true,             # Write to both original and token columns
+  read_from_token: false        # Read from original columns for now
 end
 
 # Creating a record
@@ -195,6 +197,23 @@ data = user.decrypt_fields(:first_name, :last_name)
 puts data[:first_name]  # => "John"
 puts data[:last_name]   # => "Doe"
 ```
+
+### Migration Approach
+
+The dual-write and read-from-token options enable a safe, gradual migration:
+
+```ruby
+# Phase 1: Begin dual-write but still read from original columns
+tokenize_pii dual_write: true, read_from_token: false
+
+# Phase 2: After backfilling tokens, switch to reading from token columns
+tokenize_pii dual_write: true, read_from_token: true
+
+# Phase 3: Once confident in token data, stop writing to original columns
+tokenize_pii dual_write: false, read_from_token: true
+```
+
+For more details, see the [Data Migration Guide](docs/data_migration_guide.md).
 
 ### Optimized Batch Processing
 

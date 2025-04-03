@@ -139,7 +139,7 @@ module PiiTokenizer
       def token_column_for(field)
         "#{field}_token"
       end
-      
+
       # Preload decrypted values for a collection of records
       # This enables batch decryption of the same fields across multiple records
       # @param records [Array<ActiveRecord>] Records to preload
@@ -148,61 +148,61 @@ module PiiTokenizer
         fields = fields.flatten.map(&:to_sym)
         fields_to_decrypt = fields & tokenized_fields
         return if fields_to_decrypt.empty? || records.empty?
-        
+
         # Collect all tokens that need decryption
         tokens_to_decrypt = []
         record_token_map = {}
-        
+
         records.each do |record|
           fields_to_decrypt.each do |field|
             token_column = token_column_for(field)
-            if record.respond_to?(token_column) && record.send(token_column).present?
-              token = record.send(token_column)
-              tokens_to_decrypt << token
-              
-              # Map token back to record and field
-              record_token_map[token] ||= []
-              record_token_map[token] << [record, field]
-            end
+            next unless record.respond_to?(token_column) && record.send(token_column).present?
+
+            token = record.send(token_column)
+            tokens_to_decrypt << token
+
+            # Map token back to record and field
+            record_token_map[token] ||= []
+            record_token_map[token] << [record, field]
           end
         end
-        
+
         return if tokens_to_decrypt.empty?
-        
+
         # Make a single batch request to decrypt all tokens
         decrypted_values = PiiTokenizer.encryption_service.decrypt_batch(tokens_to_decrypt)
-        
+
         # Update each record's cache with its decrypted values
         decrypted_values.each do |token, value|
-          if record_token_map[token]
-            record_token_map[token].each do |record, field|
-              record.field_decryption_cache[field] = value
-            end
+          next unless record_token_map[token]
+
+          record_token_map[token].each do |record, field|
+            record.field_decryption_cache[field] = value
           end
         end
       end
-      
+
       # Chainable method to include decrypted fields in query results
       # @param fields [Array<Symbol>] Fields to decrypt
       # @return [ActiveRecord::Relation] The relation for method chaining
       def include_decrypted_fields(*fields)
         fields = fields.flatten.map(&:to_sym)
-        
+
         # Store the fields to decrypt in the relation's context
         all.extending(DecryptedFieldsExtension).decrypt_fields(fields)
       end
     end
-    
+
     # Extension module for the ActiveRecord::Relation to support decryption in batches
     module DecryptedFieldsExtension
       def decrypt_fields(fields)
         @decrypt_fields = fields
         self
       end
-      
+
       def to_a
         records = super
-        if @decrypt_fields && @decrypt_fields.any?
+        if @decrypt_fields&.any?
           # Preload decrypted fields in batch for all records
           model = klass
           model.preload_decrypted_fields(records, @decrypt_fields)

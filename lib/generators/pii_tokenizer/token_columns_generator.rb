@@ -23,7 +23,7 @@ module PiiTokenizer
       if Rails::VERSION::MAJOR >= 5
         "[#{Rails::VERSION::MAJOR}.#{Rails::VERSION::MINOR}]"
       else
-        ""
+        ''
       end
     end
 
