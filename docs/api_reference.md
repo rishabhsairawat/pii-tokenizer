@@ -137,6 +137,51 @@ user.token_column_name(:first_name)
 # => :first_name_token
 ```
 
+#### `include_decrypted_fields(*fields)`
+
+Efficiently decrypts specified fields for a collection of records in a single API call.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `fields` | Array | The tokenized fields to decrypt |
+
+**Returns:**
+
+An ActiveRecord::Relation that will decrypt the specified fields in batch when executed.
+
+**Example:**
+
+```ruby
+# Instead of N+1 decryption calls
+users = User.where(active: true)
+users.each { |user| puts user.email }  # Makes one API call per record
+
+# Batch decryption - makes a single API call for all records
+users = User.where(active: true).include_decrypted_fields(:email, :first_name)
+users.each { |user| puts user.email }  # No additional API calls
+```
+
+#### `preload_decrypted_fields(records, *fields)`
+
+Preloads decrypted values for multiple records in a single API call.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `records` | Array | Records to decrypt fields for |
+| `fields` | Array | The tokenized fields to decrypt |
+
+**Example:**
+
+```ruby
+users = User.where(active: true).to_a
+User.preload_decrypted_fields(users, :email, :first_name)
+users.each { |user| puts user.email }  # No additional API calls
+```
+
 ## EncryptionService
 
 The `PiiTokenizer::EncryptionService` handles communication with the external encryption service.

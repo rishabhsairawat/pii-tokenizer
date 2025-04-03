@@ -33,9 +33,44 @@ users.each do |user|
 end
 
 # Better: Batch decrypt fields for multiple records
-user_ids = users.map(&:id)
-User.where(id: user_ids).include_decrypted_fields(:first_name)
+# This makes a single API call instead of one per record
+users = User.where(id: user_ids).include_decrypted_fields(:first_name)
+users.each do |user|
+  puts user.first_name  # Uses cached value, no API call
+end
+
+# Alternative: Preload decryption for existing records
+users = User.where(id: user_ids).to_a
+User.preload_decrypted_fields(users, :first_name, :last_name)
 ```
+
+### Working With Collections
+
+When working with multiple records, always use the batch processing methods to minimize API calls:
+
+1. **For ActiveRecord queries:**
+   ```ruby
+   # Chained with other scopes
+   active_users = User.active.include_decrypted_fields(:email, :first_name)
+   
+   # With associations
+   company.users.include_decrypted_fields(:email)
+   ```
+
+2. **For existing collections:**
+   ```ruby
+   users = User.where(created_at: 1.day.ago..Time.now).to_a
+   User.preload_decrypted_fields(users, :first_name, :last_name, :email)
+   ```
+
+3. **Handling associations:**
+   ```ruby
+   companies = Company.includes(:users).limit(10)
+   
+   # Preload user fields after loading the association
+   user_records = companies.flat_map(&:users)
+   User.preload_decrypted_fields(user_records, :email)
+   ```
 
 ### Caching
 

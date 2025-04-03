@@ -167,41 +167,59 @@ PiiTokenizer supports a gradual migration strategy through its dual-write capabi
 ### Basic Tokenization
 
 ```ruby
-class Customer < ActiveRecord::Base
+class User < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
   
   tokenize_pii fields: {
     first_name: 'NAME',
-    last_name: 'NAME', 
-    email: 'EMAIL',
-    phone: 'PHONE'
-  }, 
-  entity_type: 'CUSTOMER',
-  entity_id: ->(record) { "customer_#{record.id}" },
-  dual_write: true,             # Write to both original and token columns
-  read_from_token: false        # Read from original columns for now
+    last_name: 'NAME',
+    email: 'EMAIL'
+  },
+  entity_type: 'USER',
+  entity_id: ->(record) { record.id.to_s }
 end
+
+# Creating a record
+user = User.create(
+  first_name: 'John', 
+  last_name: 'Doe', 
+  email: 'john.doe@example.com'
+)
+
+# Reading data (automatic decryption)
+puts user.first_name  # => "John"
+puts user.email       # => "john.doe@example.com"
+
+# Batch decryption of multiple fields for a single record
+data = user.decrypt_fields(:first_name, :last_name)
+puts data[:first_name]  # => "John"
+puts data[:last_name]   # => "Doe"
 ```
 
-### Accessing Tokenized Fields
+### Optimized Batch Processing
 
-Accessing tokenized fields is transparent - the gem handles decryption automatically:
+PiiTokenizer includes optimized batch processing to avoid N+1 API calls when working with collections:
 
 ```ruby
-customer = Customer.find(1)
-customer.first_name  # Automatically decrypts the value
-customer.decrypt_fields(:first_name, :last_name)  # Batch decrypt multiple fields
+# Without optimization - causes N+1 API calls
+users = User.where(active: true).limit(50)
+users.each do |user|
+  puts "#{user.first_name} #{user.last_name}"  # One API call per user
+end
+
+# With batch optimization - only one API call for all users
+users = User.where(active: true)
+  .include_decrypted_fields(:first_name, :last_name)
+  .limit(50)
+  
+users.each do |user|
+  puts "#{user.first_name} #{user.last_name}"  # No additional API calls
+end
+
+# For existing collections
+users = User.where(created_at: 1.day.ago..Time.now).to_a
+User.preload_decrypted_fields(users, :first_name, :last_name, :email)
 ```
-
-### Batch Token Backfill
-
-To tokenize existing data:
-
-```bash
-$ rake pii_tokenizer:backfill[Customer,1000]
-```
-
-This processes records in batches of 1000, tokenizing plaintext values and storing them in token columns.
 
 ## Configuration Options
 
