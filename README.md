@@ -1,102 +1,39 @@
 # PiiTokenizer
 
-A Ruby gem for securely handling PII (Personally Identifiable Information) in ActiveRecord models using tokenization through an external encryption service. Built for applications that need to protect sensitive data while maintaining functionality.
+[![Ruby](https://img.shields.io/badge/ruby-2.5.0%2B-blue.svg)](https://www.ruby-lang.org/en/)
+[![Rails](https://img.shields.io/badge/rails-4.2%2B-orange.svg)](https://rubyonrails.org/)
 
-[![Gem Version](https://badge.fury.io/rb/pii_tokenizer.svg)](https://badge.fury.io/rb/pii_tokenizer)
+PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Identifiable Information (PII) in ActiveRecord models. It integrates with an external encryption service to replace sensitive data with tokens.
 
 ## Features
 
-- **Field Tokenization**: Replace sensitive PII with secure tokens
-- **Transparent Access**: Automatically decrypt data when accessed through model attributes
-- **Dual-Write Strategy**: Support for gradual migration from plaintext to tokenized data 
-- **Batch Processing**: Efficient token generation and decryption using batch operations
-- **Custom PII Types**: Flexible configuration for different types of personally identifiable information
-- **Rails Integration**: Generators for migrations, Rake tasks for data backfilling
-- **Active Record Support**: Compatible with Rails 4.2+ through Rails 7
+- Transparent tokenization of sensitive PII fields in ActiveRecord models
+- Automatic encryption on save and decryption on access
+- Batch operations for improved performance
+- Flexible configuration of entity types and identifiers
+- Support for dual-write mode (maintaining both original and tokenized values)
+- Chainable query methods for preloading tokenized fields
 
 ## Installation
 
-Add the gem to your application's Gemfile:
+Add to your Gemfile:
 
 ```ruby
 gem 'pii_tokenizer'
 ```
 
-And install:
+Then install:
 
+```bash
+bundle install
 ```
-$ bundle install
-```
 
-## Quick Start
+## Database Setup
 
-1. **Configure** the gem with your encryption service:
+For each field you want to tokenize, add a corresponding `_token` column to store the encrypted value. For example:
 
 ```ruby
-# config/initializers/pii_tokenizer.rb
-PiiTokenizer.configure do |config|
-  config.encryption_service_url = ENV['ENCRYPTION_SERVICE_URL']
-  config.batch_size = 100 # Optional, defaults to 100
-end
-```
-
-2. **Set up your model** with tokenized fields:
-
-```ruby
-class User < ActiveRecord::Base
-  include PiiTokenizer::Tokenizable
-  
-  tokenize_pii fields: {
-    first_name: 'FIRST_NAME',
-    last_name: 'LAST_NAME', 
-    email: 'EMAIL',
-    ssn: 'SSN'
-  }, 
-  entity_type: 'USER',
-  entity_id: ->(record) { record.id.to_s }
-end
-```
-
-3. **Add token columns** to your database:
-
-```bash
-# Generate a migration to add token columns for specified fields
-$ rails generate pii_tokenizer:token_columns user first_name last_name email ssn
-$ rails db:migrate
-```
-
-This generates a migration that adds columns like `first_name_token`, `last_name_token`, etc.
-
-4. **Add indices to token columns** (optional, but recommended for query performance):
-
-```bash
-# Generate a migration to add indices to the token columns
-$ rails generate pii_tokenizer:token_indices user first_name last_name email ssn
-$ rails db:migrate
-```
-
-The token indices generator creates optimized indices, including concurrent index creation for PostgreSQL.
-
-## Migration Generators
-
-### TokenColumns Generator
-
-Creates a migration to add token columns to your database table:
-
-```bash
-$ rails generate pii_tokenizer:token_columns MODEL_NAME FIELD1 FIELD2 ...
-```
-
-For example, running:
-
-```bash
-$ rails generate pii_tokenizer:token_columns user first_name last_name email
-```
-
-Generates a migration like:
-
-```ruby
-class AddUserTokenColumns < ActiveRecord::Migration
+class AddTokenColumnsToUsers < ActiveRecord::Migration[6.0]
   def change
     add_column :users, :first_name_token, :string
     add_column :users, :last_name_token, :string
@@ -105,162 +42,144 @@ class AddUserTokenColumns < ActiveRecord::Migration
 end
 ```
 
-### TokenIndices Generator
+## Configuration
 
-Creates a migration to add indices to your token columns:
-
-```bash
-$ rails generate pii_tokenizer:token_indices MODEL_NAME FIELD1 FIELD2 ...
-```
-
-For example, running:
-
-```bash
-$ rails generate pii_tokenizer:token_indices user first_name last_name email
-```
-
-Generates a migration with database-specific optimizations:
+Create an initializer file:
 
 ```ruby
-class AddUserTokenIndices < ActiveRecord::Migration
-  # Disable DDL transactions for PostgreSQL concurrent indexing
-  disable_ddl_transaction!
-
-  def change
-    # Create indices concurrently on PostgreSQL, or normally on other databases
-    if connection.adapter_name.downcase.include?('postgresql')
-      add_index :users, :first_name_token, algorithm: :concurrently
-      add_index :users, :last_name_token, algorithm: :concurrently
-      add_index :users, :email_token, algorithm: :concurrently
-    else
-      add_index :users, :first_name_token
-      add_index :users, :last_name_token
-      add_index :users, :email_token
-    end
-  end
+# config/initializers/pii_tokenizer.rb
+PiiTokenizer.configure do |config|
+  config.encryption_service_url = ENV['ENCRYPTION_SERVICE_URL'] || 'https://your-encryption-service.example.com'
+  config.batch_size = 20 # Maximum items per batch request
+  config.logger = Rails.logger # Use Rails logger
+  config.log_level = :info
 end
 ```
 
-## Comprehensive Documentation
+## Usage
 
-For detailed usage instructions, migration strategies, API documentation, and best practices:
+### Basic Usage
 
-- [**Getting Started**](docs/getting_started.md): Installation and basic setup
-- [**API Reference**](docs/api_reference.md): Complete method documentation
-- [**Data Migration Guide**](docs/data_migration_guide.md): Step-by-step migration from plaintext to tokenized data
-- [**Best Practices**](docs/best_practices.md): Recommendations for secure tokenization
-- [**Troubleshooting**](docs/troubleshooting.md): Common issues and solutions
-
-## Data Migration Strategy
-
-PiiTokenizer supports a gradual migration strategy through its dual-write capability:
-
-1. **Phase 1: Setup** - Configure for dual-write but read from original columns
-2. **Phase 2: Backfill** - Run the backfill task to populate token columns
-3. **Phase 3: Switch Reading** - Change to reading from tokenized columns
-4. **Phase 4: Clean Up** - Stop dual-write and eventually remove plaintext data
-
-[See the detailed data migration guide](docs/data_migration_guide.md) for a complete walkthrough.
-
-## Example Usage
-
-### Basic Tokenization
+Include the module in your ActiveRecord model and configure tokenization:
 
 ```ruby
-class User < ActiveRecord::Base
+class User < ApplicationRecord
+  include PiiTokenizer::Tokenizable
+  
+  tokenize_pii fields: [:first_name, :last_name, :email],
+               entity_type: 'customer',
+               entity_id: ->(user) { "user_#{user.id}" },
+               dual_write: false,
+               read_from_token: true
+end
+```
+
+### Custom PII Types
+
+You can specify custom PII types for each field:
+
+```ruby
+class User < ApplicationRecord
   include PiiTokenizer::Tokenizable
   
   tokenize_pii fields: {
-    first_name: 'NAME',
-    last_name: 'NAME',
-    email: 'EMAIL'
-  },
-  entity_type: 'USER',
-  entity_id: ->(record) { record.id.to_s },
-  dual_write: true,             # Write to both original and token columns
-  read_from_token: false        # Read from original columns for now
+                 first_name: 'NAME',
+                 last_name: 'NAME',
+                 email: 'EMAIL',
+                 ssn: 'SSN'
+               },
+               entity_type: 'customer',
+               entity_id: ->(user) { "user_#{user.id}" }
 end
-
-# Creating a record
-user = User.create(
-  first_name: 'John', 
-  last_name: 'Doe', 
-  email: 'john.doe@example.com'
-)
-
-# Reading data (automatic decryption)
-puts user.first_name  # => "John"
-puts user.email       # => "john.doe@example.com"
-
-# Batch decryption of multiple fields for a single record
-data = user.decrypt_fields(:first_name, :last_name)
-puts data[:first_name]  # => "John"
-puts data[:last_name]   # => "Doe"
 ```
 
-### Migration Approach
+### Dynamic Entity Types
 
-The dual-write and read-from-token options enable a safe, gradual migration:
-
-```ruby
-# Phase 1: Begin dual-write but still read from original columns
-tokenize_pii dual_write: true, read_from_token: false
-
-# Phase 2: After backfilling tokens, switch to reading from token columns
-tokenize_pii dual_write: true, read_from_token: true
-
-# Phase 3: Once confident in token data, stop writing to original columns
-tokenize_pii dual_write: false, read_from_token: true
-```
-
-For more details, see the [Data Migration Guide](docs/data_migration_guide.md).
-
-### Optimized Batch Processing
-
-PiiTokenizer includes optimized batch processing to avoid N+1 API calls when working with collections:
+You can use a proc for dynamic entity types:
 
 ```ruby
-# Without optimization - causes N+1 API calls
-users = User.where(active: true).limit(50)
-users.each do |user|
-  puts "#{user.first_name} #{user.last_name}"  # One API call per user
-end
-
-# With batch optimization - only one API call for all users
-users = User.where(active: true)
-  .include_decrypted_fields(:first_name, :last_name)
-  .limit(50)
+class User < ApplicationRecord
+  include PiiTokenizer::Tokenizable
   
-users.each do |user|
-  puts "#{user.first_name} #{user.last_name}"  # No additional API calls
+  tokenize_pii fields: [:first_name, :last_name, :email],
+               entity_type: ->(user) { user.role || 'customer' },
+               entity_id: ->(user) { "user_#{user.id}" }
 end
-
-# For existing collections
-users = User.where(created_at: 1.day.ago..Time.now).to_a
-User.preload_decrypted_fields(users, :first_name, :last_name, :email)
 ```
 
-## Configuration Options
+### Automatic Tokenization
 
-| Option | Description |
-|--------|-------------|
-| `fields` | Hash mapping model fields to PII types or array of field names |
-| `entity_type` | String or Proc returning the entity type identifier |
-| `entity_id` | Proc returning a unique identifier for each record |
-| `dual_write` | Whether to write to both original and token columns |
-| `read_from_token` | Whether to read from token columns or original columns |
+The gem automatically tokenizes fields on save:
+
+```ruby
+user = User.create(first_name: 'John', last_name: 'Doe', email: 'john.doe@example.com')
+# Data is tokenized automatically
+```
+
+### Reading Tokenized Values
+
+Reading data is also transparent:
+
+```ruby
+user = User.find(1)
+puts user.first_name # Automatically decrypts the token
+```
+
+### Batch Operations
+
+For improved performance with collections:
+
+```ruby
+users = User.where(active: true).include_decrypted_fields(:first_name, :last_name)
+users.each do |user|
+  # Accessing first_name and last_name will use pre-decrypted values from batch operation
+  puts "#{user.first_name} #{user.last_name}"
+end
+```
+
+### Manual Decryption
+
+You can also manually decrypt fields:
+
+```ruby
+# Decrypt a single field
+value = user.decrypt_field(:email)
+
+# Decrypt multiple fields at once
+values = user.decrypt_fields(:first_name, :last_name, :email)
+puts values[:first_name]
+```
+
+## Options
+
+### Dual Write Mode
+
+When `dual_write` is `true`, both the original column and the token column will contain values. When `false` (default), only the token column will have values, and the original column will be `nil`.
+
+### Read From Token
+
+When `read_from_token` is `true` (default), values will be read from token columns if they exist. When `false`, values will always be read from original columns.
+
+## External Encryption Service
+
+This gem requires an external encryption service that provides the following API endpoints:
+
+- `POST /api/v1/tokens/bulk` - For batch encryption
+- `GET /api/v1/tokens/decrypt` - For batch decryption
+
+The service should handle encryption and decryption of sensitive data, returning tokens that can be safely stored in the database.
 
 ## Contributing
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -am 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
+2. Create your feature branch (`git checkout -b my-new-feature`)
+3. Commit your changes (`git commit -am 'Add some feature'`)
+4. Push to the branch (`git push origin my-new-feature`)
 5. Create a new Pull Request
 
 ## License
 
-This gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+This gem is available as open source under the terms of the [MIT License](LICENSE).
 
 ## Testing Your Application
 

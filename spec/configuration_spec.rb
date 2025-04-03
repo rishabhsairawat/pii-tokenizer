@@ -114,6 +114,9 @@ RSpec.describe PiiTokenizer::Configuration do
   end
 
   it 'creates a default logger when none is specified' do
+    # Set required encryption_service_url to avoid ArgumentError
+    config.encryption_service_url = 'https://example.com'
+
     # When logger is not set, EncryptionService creates a default one
     service = PiiTokenizer::EncryptionService.new(config)
     expect(service.instance_variable_get(:@logger)).to be_a(Logger)

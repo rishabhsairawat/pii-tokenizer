@@ -8,13 +8,22 @@ Gem::Specification.new do |spec|
   spec.authors       = ['Rishabh Sairawat']
   spec.email         = ['rishabhsairawat01@gmail.com']
 
-  spec.summary       = 'Tokenize PII fields in ActiveRecord models'
-  spec.description   = 'A gem for encrypting and decrypting PII fields in ActiveRecord models ' \
-                      'using an external encryption service with batch processing support'
+  spec.summary       = 'Securely tokenize Personally Identifiable Information (PII) in ActiveRecord models'
+  spec.description   = 'PiiTokenizer provides a secure way to handle sensitive personal data ' \
+                       'in ActiveRecord models by replacing it with tokens via an external ' \
+                       'encryption service. Features include automatic encryption/decryption, ' \
+                       'batch processing, and transparent access to tokenized data.'
   spec.homepage      = 'https://github.com/rishabhsairawat/pii_tokenizer'
   spec.license       = 'MIT'
+  spec.metadata      = {
+    'homepage_uri' => spec.homepage,
+    'source_code_uri' => spec.homepage,
+    'bug_tracker_uri' => "#{spec.homepage}/issues",
+    'documentation_uri' => "#{spec.homepage}/blob/master/README.md",
+    'rubygems_mfa_required' => 'true'
+  }
 
-  spec.files         = Dir.chdir(File.expand_path(__dir__)) do
+  spec.files = Dir.chdir(File.expand_path(__dir__)) do
     `git ls-files -z`.split("\x0").reject { |f| f.match(%r{^(test|spec|features)/}) }
   end
   spec.bindir        = 'exe'

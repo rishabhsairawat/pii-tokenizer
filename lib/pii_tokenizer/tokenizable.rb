@@ -1,6 +1,21 @@
 require 'active_support/concern'
 
 module PiiTokenizer
+  # Main module providing PII tokenization capabilities to ActiveRecord models
+  # When included in a model, this module adds methods to encrypt/decrypt PII fields
+  # and manage token values through an external encryption service
+  #
+  # @example Basic usage
+  #   class User < ActiveRecord::Base
+  #     include PiiTokenizer::Tokenizable
+  #
+  #     tokenize_pii fields: [:first_name, :last_name, :email],
+  #                 entity_type: 'customer',
+  #                 entity_id: ->(user) { "user_#{user.id}" }
+  #   end
+  #
+  # @note Each tokenized field should have a corresponding _token column in the database
+  #       (e.g., first_name should have first_name_token column)
   module Tokenizable
     extend ActiveSupport::Concern
 
@@ -31,10 +46,14 @@ module PiiTokenizer
 
       # Define class methods for cache access
       class << self
+        # Get the current decryption cache
+        # @return [Hash] The decryption cache for all instances
         def decryption_cache
           _decryption_cache
         end
 
+        # Set the decryption cache
+        # @param value [Hash] The new decryption cache value
         def decryption_cache=(value)
           self._decryption_cache = value
         end
@@ -58,6 +77,15 @@ module PiiTokenizer
       # @param read_from_token [Boolean] Whether to read from token columns
       #        When true, values will be read from token columns if they exist
       #        When false, values will always be read from original columns
+      # @return [void]
+      # @example With array of fields
+      #   tokenize_pii fields: [:first_name, :last_name],
+      #               entity_type: 'customer',
+      #               entity_id: ->(record) { "user_#{record.id}" }
+      # @example With custom PII types
+      #   tokenize_pii fields: {first_name: 'NAME', email: 'EMAIL_ADDRESS'},
+      #               entity_type: ->(record) { record.role || 'customer' },
+      #               entity_id: ->(record) { "#{record.role}_#{record.id}" }
       def tokenize_pii(fields:, entity_type:, entity_id:, dual_write: true, read_from_token: false)
         # Convert to string keys for consistency
         fields_hash = {}
@@ -100,6 +128,8 @@ module PiiTokenizer
       end
 
       # Override writer method to store original value
+      # @param field [Symbol] Field to define writer for
+      # @return [void]
       def define_field_writer(field)
         define_method("#{field}=") do |value|
           # Store the unencrypted value in the object, will be encrypted on save
@@ -110,6 +140,8 @@ module PiiTokenizer
       end
 
       # Override reader method to decrypt on access
+      # @param field [Symbol] Field to define reader for
+      # @return [void]
       def define_field_reader(field)
         define_method(field) do
           # If we have an original value set (from a write), return that
@@ -136,6 +168,8 @@ module PiiTokenizer
       end
 
       # Get the token column name for a field
+      # @param field [Symbol, String] The field name
+      # @return [String] Token column name (field_token)
       def token_column_for(field)
         "#{field}_token"
       end
@@ -144,6 +178,9 @@ module PiiTokenizer
       # This enables batch decryption of the same fields across multiple records
       # @param records [Array<ActiveRecord>] Records to preload
       # @param fields [Array<Symbol>] Fields to decrypt
+      # @return [void]
+      # @example Preload names for a collection
+      #   User.preload_decrypted_fields(users, :first_name, :last_name)
       def preload_decrypted_fields(records, *fields)
         fields = fields.flatten.map(&:to_sym)
         fields_to_decrypt = fields & tokenized_fields
@@ -185,6 +222,8 @@ module PiiTokenizer
       # Chainable method to include decrypted fields in query results
       # @param fields [Array<Symbol>] Fields to decrypt
       # @return [ActiveRecord::Relation] The relation for method chaining
+      # @example Include decrypted fields in a query
+      #   users = User.where(active: true).include_decrypted_fields(:first_name, :last_name)
       def include_decrypted_fields(*fields)
         fields = fields.flatten.map(&:to_sym)
 
@@ -195,11 +234,16 @@ module PiiTokenizer
 
     # Extension module for the ActiveRecord::Relation to support decryption in batches
     module DecryptedFieldsExtension
+      # Set fields to decrypt when relation is loaded
+      # @param fields [Array<Symbol>] Fields to decrypt
+      # @return [ActiveRecord::Relation] self for chaining
       def decrypt_fields(fields)
         @decrypt_fields = fields
         self
       end
 
+      # Override to_a to preload decrypted fields
+      # @return [Array<ActiveRecord>] Array of records with decrypted fields
       def to_a
         records = super
         if @decrypt_fields&.any?
@@ -212,26 +256,34 @@ module PiiTokenizer
     end
 
     # Get the entity type for this record
+    # @return [String] Entity type
     def entity_type
       self.class.entity_type_proc.call(self)
     end
 
     # Get the entity ID for this record
+    # @return [String] Entity ID
     def entity_id
       self.class.entity_id_proc.call(self)
     end
 
     # Get the pii_type for a field
+    # @param field [Symbol, String] Field name
+    # @return [String, nil] PII type or nil if not found
     def pii_type_for(field)
       self.class.pii_types[field.to_s]
     end
 
     # Get the token column name for a field
+    # @param field [Symbol, String] Field name
+    # @return [String] Token column name
     def token_column_for(field)
       self.class.token_column_for(field)
     end
 
     # Encrypt all tokenized fields before saving
+    # Called by the before_save callback
+    # @return [void]
     def encrypt_pii_fields
       # Skip if no tokenized fields
       return if self.class.tokenized_fields.empty?
@@ -306,6 +358,8 @@ module PiiTokenizer
     end
 
     # Register this record for lazy decryption when fields are accessed
+    # Called by after_find and after_initialize callbacks
+    # @return [void]
     def register_for_decryption
       return if self.class.tokenized_fields.empty? || new_record?
 
@@ -316,6 +370,8 @@ module PiiTokenizer
     # Decrypt a single tokenized field
     # @param field [Symbol, String] the field to decrypt
     # @return [String, nil] the decrypted value, or nil if the field is not tokenized or has no value
+    # @example Decrypt a single field
+    #   user.decrypt_field(:email)
     def decrypt_field(field)
       field_sym = field.to_sym
       return nil unless self.class.tokenized_fields.include?(field_sym)
@@ -360,6 +416,8 @@ module PiiTokenizer
     # Decrypt multiple tokenized fields at once
     # @param fields [Array<Symbol, String>] the fields to decrypt
     # @return [Hash] mapping of field names to decrypted values
+    # @example Decrypt multiple fields
+    #   user.decrypt_fields(:first_name, :last_name, :email)
     def decrypt_fields(*fields)
       fields = fields.flatten.map(&:to_sym)
       fields_to_decrypt = fields & self.class.tokenized_fields
@@ -410,6 +468,7 @@ module PiiTokenizer
     end
 
     # Get the field decryption cache for this instance
+    # @return [Hash] Cache of decrypted field values
     def field_decryption_cache
       @field_decryption_cache ||= {}
     end
@@ -417,20 +476,30 @@ module PiiTokenizer
     private
 
     # Token column name for a field
+    # @param field [Symbol, String] Field name
+    # @return [String] Token column name
     def token_column_for(field)
       "#{field}_token"
     end
 
-    # Cache management methods
+    # Clear the per-instance decryption cache
+    # @return [void]
     def clear_decryption_cache
       @field_decryption_cache = {}
     end
 
+    # Cache a decrypted value for a field
+    # @param field [Symbol, String] Field name
+    # @param value [String, nil] Decrypted value
+    # @return [void]
     def cache_decrypted_value(field, value)
       self.class.decryption_cache[object_id] ||= {}
       self.class.decryption_cache[object_id][field.to_sym] = value
     end
 
+    # Get a cached decrypted value for a field
+    # @param field [Symbol, String] Field name
+    # @return [String, nil] Cached value or nil if not cached
     def get_cached_decrypted_value(field)
       return nil unless self.class.decryption_cache[object_id]
 
