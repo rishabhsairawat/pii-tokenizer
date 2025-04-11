@@ -521,9 +521,12 @@ module PiiTokenizer
           end
 
           # Get attribute values to be tokenized
-          
-          # First check if we have an in-memory original value
-          if instance_variable_defined?("@original_#{field}")
+
+          # First check if we have fields flagged for encryption from virtual attributes
+          if @fields_to_encrypt && @fields_to_encrypt.key?(field.to_sym)
+            value = @fields_to_encrypt[field.to_sym]
+          # Then check if we have an in-memory original value
+          elsif instance_variable_defined?("@original_#{field}")
             value = instance_variable_get("@original_#{field}")
           # Then check for a virtual attribute value for dropped columns
           elsif !self.class.column_exists?(field) && instance_variable_defined?("@_virtual_#{field}")
@@ -588,7 +591,7 @@ module PiiTokenizer
           # We want to keep existing tokens in that case
           next if token.nil? && self.class.dual_write_enabled && 
                   (instance_variable_defined?("@#{field}_set_to_nil") && 
-                   !instance_variable_get("@#{field}_set_to_nil"))
+                    !instance_variable_get("@#{field}_set_to_nil"))
 
           # Save to token column
           token_column = "#{field}_token"
@@ -610,6 +613,9 @@ module PiiTokenizer
         # Use update_columns to bypass validations and callbacks
         # This is safe since we already passed the main transaction
         update_columns(update_hash) if update_hash.present?
+        
+        # Clear the fields_to_encrypt cache after handling tokenization
+        @fields_to_encrypt = nil
       end
 
       # Handle tokenization for updates to existing records
@@ -622,6 +628,17 @@ module PiiTokenizer
         
         # Collect data for tokenization
         tokens_data = []
+        
+        # Add any manually flagged fields for encryption (from virtual attributes)
+        if @fields_to_encrypt.present?
+          tokenized_values = tokenized_values.dup
+          @fields_to_encrypt.each do |field, value|
+            # Only add if not already in tokenized_values
+            unless tokenized_values.key?(field)
+              tokenized_values[field] = value
+            end
+          end
+        end
         
         tokenized_values.each do |field, value|
           field_str = field.to_s
@@ -683,6 +700,9 @@ module PiiTokenizer
             write_attribute(column, value)
           end
         end
+        
+        # Clear the fields_to_encrypt hash after processing
+        @fields_to_encrypt = nil
       end
 
       # Collect current values of tokenized fields
@@ -697,10 +717,13 @@ module PiiTokenizer
                   instance_variable_get("@#{field}_set_to_nil")
           
           # Check for values in this order:
-          # 1. @original_#{field} instance variable (from setter)
-          # 2. @_virtual_#{field} instance variable (for dropped columns)
-          # 3. Actual attribute value (if column exists)
-          value = if instance_variable_defined?("@original_#{field}")
+          # 1. @fields_to_encrypt hash (from virtual attributes for dropped columns)
+          # 2. @original_#{field} instance variable (from setter)
+          # 3. @_virtual_#{field} instance variable (for dropped columns)
+          # 4. Actual attribute value (if column exists)
+          value = if @fields_to_encrypt && @fields_to_encrypt.key?(field.to_sym)
+                    @fields_to_encrypt[field.to_sym]
+                  elsif instance_variable_defined?("@original_#{field}")
                     instance_variable_get("@original_#{field}")
                   elsif !self.class.column_exists?(field) && instance_variable_defined?("@_virtual_#{field}")
                     instance_variable_get("@_virtual_#{field}")
@@ -708,10 +731,13 @@ module PiiTokenizer
                     changes[field_str].last
                   end
           
-          # Only include changed values
-          if !value.nil? && (instance_variable_defined?("@original_#{field}") || 
-                              (instance_variable_defined?("@_virtual_#{field}") && !self.class.column_exists?(field)) ||
-                              attribute_changed?(field_str))
+          # Only include changed values or explicitly flagged virtual attributes
+          if !value.nil? && (
+               @fields_to_encrypt&.key?(field.to_sym) ||
+               instance_variable_defined?("@original_#{field}") || 
+               (instance_variable_defined?("@_virtual_#{field}") && !self.class.column_exists?(field)) ||
+               attribute_changed?(field_str)
+             )
             values[field.to_sym] = value
           end
         end
@@ -894,6 +920,11 @@ module PiiTokenizer
               # Mark the token column for update
               token_column = "#{field}_token"
               send(:attribute_will_change!, token_column)
+              
+              # Flag this field for tokenization in the main transaction
+              # to prevent a second update later
+              @fields_to_encrypt ||= {}
+              @fields_to_encrypt[field.to_sym] = value
               
               # Return the value (don't call super since the column doesn't exist)
               return value
