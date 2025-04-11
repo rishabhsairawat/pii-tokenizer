@@ -274,7 +274,7 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
     it 'integrates with ActiveRecord callbacks' do
       # Skip this test if we're running on a slow CI environment
-      skip "Skipping in CI due to timing issues" if ENV['CI']
+      skip 'Skipping in CI due to timing issues' if ENV['CI']
 
       user = User.new(id: 1, first_name: 'John', last_name: 'Doe', email: 'john@example.com')
 
@@ -291,7 +291,7 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
       # Use a manual counter to track if tokenization occurred
       tokenization_happened = false
-      allow(user).to receive(:encrypt_pii_fields) do 
+      allow(user).to receive(:encrypt_pii_fields) do
         tokenization_happened = true
         # Call the original method
         user.method(:encrypt_pii_fields).super_method.call
