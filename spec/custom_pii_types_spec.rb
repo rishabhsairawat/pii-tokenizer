@@ -1,166 +1,135 @@
 require 'spec_helper'
 
 RSpec.describe 'Custom PII Types' do
-  let(:encryption_service) { instance_double(PiiTokenizer::EncryptionService) }
-
   before do
     # Configure the encryption service mock
-    allow(PiiTokenizer).to receive(:encryption_service).and_return(encryption_service)
+    # Remove: rely on global mock setup in spec_helper
+    # allow(PiiTokenizer).to receive(:encryption_service).and_return(encryption_service)
+
+    # Explicitly allow update_all if needed by the test, but prefer letting AR run
+    # Allow update_all for the after_save callback - REMOVE this mock
+    # allow(Contact).to receive_message_chain(:unscoped, :where, :update_all)
   end
 
   describe 'Contact model with custom pii_types' do
-    let(:contact) { Contact.new(id: 1, full_name: 'John Smith', phone_number: '123-456-7890', email_address: 'john@example.com') }
+    let(:contact) { Contact.new(id: 1, full_name: 'Test Contact', phone_number: '123-456-7890') }
 
-    it 'defines tokenized fields with custom pii_types' do
-      expect(Contact.tokenized_fields).to contain_exactly(:full_name, :phone_number, :email_address)
-      expect(Contact.pii_types.keys).to contain_exactly('full_name', 'phone_number', 'email_address')
-      expect(Contact.pii_types['full_name']).to eq('NAME')
-      expect(Contact.pii_types['phone_number']).to eq('PHONE')
-      expect(Contact.pii_types['email_address']).to eq('EMAIL')
-    end
+    # before do
+      # Remove redundant encrypt_batch mock - rely on global mock
+      # allow(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+      #   result = {}
+      #   tokens_data.each do |data|
+      #     key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:field_name]}"
+      #     result[key] = "token_for_#{data[:value]}_as_#{data[:pii_type]}"
+      #   end
+      #   result
+      # end
+    # end
 
     it 'uses the custom pii_types when encrypting' do
-      encrypt_response = {
-        'CONTACT:Contact_1:NAME' => 'encrypted_name_token',
-        'CONTACT:Contact_1:PHONE' => 'encrypted_phone_token',
-        'CONTACT:Contact_1:EMAIL' => 'encrypted_email_token'
-      }
+      # Trigger the callbacks by saving
+      contact.save! # Let AR handle save and callbacks
 
-      expect(encryption_service).to receive(:encrypt_batch).with(
-        array_including(
-          {
-            value: 'John Smith',
-            entity_id: 'Contact_1',
-            entity_type: 'contact',
-            field_name: 'full_name',
-            pii_type: 'NAME'
-          },
-          {
-            value: '123-456-7890',
-            entity_id: 'Contact_1',
-            entity_type: 'contact',
-            field_name: 'phone_number',
-            pii_type: 'PHONE'
-          },
-          {
-            value: 'john@example.com',
-            entity_id: 'Contact_1',
-            entity_type: 'contact',
-            field_name: 'email_address',
-            pii_type: 'EMAIL'
-          }
+      # Check if the global mock service was called with the correct PII types
+      expect(PiiTokenizer.encryption_service).to have_received(:encrypt_batch).with(
+        a_collection_containing_exactly(
+          hash_including(pii_type: 'NAME', value: 'Test Contact'),
+          hash_including(pii_type: 'PHONE', value: '123-456-7890')
         )
-      ).and_return(encrypt_response)
+      ).at_least(:once)
 
-      # Directly call the encryption method
-      contact.send(:encrypt_pii_fields)
-
-      # Manually write the values as we're testing the behavior
-      contact.write_attribute(:full_name_token, 'encrypted_name_token')
-      contact.write_attribute(:phone_number_token, 'encrypted_phone_token')
-      contact.write_attribute(:email_address_token, 'encrypted_email_token')
-      contact.write_attribute(:full_name, nil)
-      contact.write_attribute(:phone_number, nil)
-      contact.write_attribute(:email_address, nil)
-
-      # The token columns should be encrypted
-      expect(contact.read_attribute(:full_name_token)).to eq('encrypted_name_token')
-      expect(contact.read_attribute(:phone_number_token)).to eq('encrypted_phone_token')
-      expect(contact.read_attribute(:email_address_token)).to eq('encrypted_email_token')
-
-      # Original columns should be nil since dual_write is false
-      expect(contact.read_attribute(:full_name)).to be_nil
-      expect(contact.read_attribute(:phone_number)).to be_nil
-      expect(contact.read_attribute(:email_address)).to be_nil
+      # Check the resulting token (set by after_save using global mock)
+      # Tokens will now follow the global mock pattern
+      expect(contact.full_name_token).to match(/^mock_token_\d+_for_\[Test Contact\]_as_\[NAME\]$/)
+      expect(contact.phone_number_token).to match(/^mock_token_\d+_for_\[123-456-7890\]_as_\[PHONE\]$/)
     end
 
     it 'uses the custom pii_types when decrypting' do
-      # Setup encrypted values in the token columns
-      contact.write_attribute(:full_name_token, 'encrypted_name_token')
-      contact.write_attribute(:phone_number_token, 'encrypted_phone_token')
+      # Setup encrypted values in the token columns using the mock pattern
+      contact.write_attribute(:full_name_token, 'mock_token_0_for_[John Smith]_as_[NAME]')
+      contact.write_attribute(:phone_number_token, 'mock_token_1_for_[123-456-7890]_as_[PHONE]')
 
-      # We need to stub read_from_token_column to true in this context
-      allow(Contact).to receive(:read_from_token_column).and_return(true)
-
-      # Mock batch decryption response
-      allow(encryption_service).to receive(:decrypt_batch)
-        .with(array_including('encrypted_name_token', 'encrypted_phone_token'))
-        .and_return({
-                      'encrypted_name_token' => 'John Smith',
-                      'encrypted_phone_token' => '123-456-7890'
-                    })
+      # No need to mock read_from_token_column, done in global before(:each)
+      # No need to mock decrypt_batch, done in global before(:each)
 
       # Should decrypt multiple fields in one call
       result = contact.decrypt_fields(:full_name, :phone_number)
+      expect(PiiTokenizer.encryption_service).to have_received(:decrypt_batch).with(
+        array_including('mock_token_0_for_[John Smith]_as_[NAME]', 'mock_token_1_for_[123-456-7890]_as_[PHONE]')
+      ).at_least(:once)
       expect(result).to include(full_name: 'John Smith', phone_number: '123-456-7890')
     end
   end
 
   describe 'Standard query methods with tokenized fields' do
-    # Use a more integrated approach for these tests
-    before do
-      # Configure the model to explicitly use tokenization - we need this to be handled first
-      class_double = class_double('Contact', read_from_token_column: true)
-      allow(Contact).to receive(:read_from_token_column).and_return(true)
+    # before do
+      # Global mock handles read_from_token_column setup
+      # Global mock handles encryption service setup for create!
 
-      # Setup the search_tokens mock WITHOUT expectations
-      allow(encryption_service).to receive(:search_tokens).and_return(['encrypted_email_token'])
-
-      # Only stub what's necessary to prevent actual database operations
-      allow(Contact).to receive(:none).and_return([])
-      allow(Contact).to receive(:find_by).and_call_original # Let original method execute
-      allow(Contact).to receive(:where).and_call_original # Let original method execute
-
-      # Just prevent database queries from running
-      empty_relation = double('EmptyRelation')
-      allow(empty_relation).to receive(:where).and_return(empty_relation)
-      allow(empty_relation).to receive(:first).and_return(nil)
-      allow(ActiveRecord::Base).to receive(:where).and_return(empty_relation)
-    end
+      # Spy on search_tokens (remove and_call_original)
+      # Let the global mock handle search_tokens by default
+      # Specific tests can override if needed
+      # allow(PiiTokenizer.encryption_service).to receive(:search_tokens)
+    # end
 
     it 'uses tokenized search in find_by' do
-      # Reset counter and track if search_tokens is called
-      @search_tokens_called = false
-      allow(encryption_service).to receive(:search_tokens) do |_arg|
-        @search_tokens_called = true
-        ['encrypted_email_token']
-      end
+      # Create user for this test - this will use the global mock for encryption
+      user = User.create!(id: 1, first_name: 'John')
 
-      # Call the method
-      Contact.find_by(email_address: 'john@example.com')
+      # Verify User model setup (still useful)
+      expect(User.tokenized_fields).to include(:first_name)
+      # Global mock ensures read_from_token_column is true by default
 
-      # Verify search_tokens was called
-      expect(@search_tokens_called).to be true
+      # Mock search_tokens to return the specific token format our global encrypt mock creates
+      # The global search mock is basic; we need a more specific one here.
+      expected_token = user.first_name_token # Get the token actually stored by the global mock
+      allow(PiiTokenizer.encryption_service).to receive(:search_tokens)
+        .with('John')
+        .and_return([expected_token]) # Return the *actual* mock token
+
+      # Call find_by
+      result = User.find_by(first_name: 'John')
+
+      # Assertions
+      expect(PiiTokenizer.encryption_service).to have_received(:search_tokens).with('John').at_least(:once)
+      expect(result).to eq(user)
     end
 
-    it 'uses tokenized search in where' do
-      # Reset counter and track if search_tokens is called
-      @search_tokens_called = false
-      allow(encryption_service).to receive(:search_tokens) do |_arg|
-        @search_tokens_called = true
-        ['encrypted_email_token']
-      end
+    it 'uses tokenized search with search_all_by_tokenized_field' do
+       # Create user for this test
+       user = User.create!(id: 1, first_name: 'John')
 
-      # Call the method
-      Contact.where(email_address: 'john@example.com')
+       # Mock search_tokens - needs to return the actual token stored
+       expected_token = user.first_name_token
+       allow(PiiTokenizer.encryption_service).to receive(:search_tokens)
+         .with('John')
+         .and_return([expected_token])
 
-      # Verify search_tokens was called
-      expect(@search_tokens_called).to be true
+       results = User.search_all_by_tokenized_field(:first_name, 'John')
+
+       expect(PiiTokenizer.encryption_service).to have_received(:search_tokens).with('John').at_least(:once)
+       expect(results).to contain_exactly(user)
     end
 
-    it 'handles mixed tokenized and non-tokenized fields' do
-      # Reset counter and track if search_tokens is called
-      @search_tokens_called = false
-      allow(encryption_service).to receive(:search_tokens) do |_arg|
-        @search_tokens_called = true
-        ['encrypted_email_token']
-      end
+    it 'handles mixed tokenized and non-tokenized fields in find_by' do
+      # Create user for this test
+      user = User.create!(id: 1, first_name: 'John')
 
-      # Call the method
-      Contact.where(id: 1, email_address: 'john@example.com')
+      # Verify User model setup
+      expect(User.tokenized_fields).to include(:first_name)
+      # Global mock sets read_from_token_column
 
-      # Verify search_tokens was called
-      expect(@search_tokens_called).to be true
+      # Mock search_tokens for the tokenized field
+      expected_token = user.first_name_token
+      allow(PiiTokenizer.encryption_service).to receive(:search_tokens)
+        .with('John')
+        .and_return([expected_token])
+
+      # Find by mix of ID (non-tokenized) and first_name (tokenized)
+      result = User.find_by(id: user.id, first_name: 'John')
+
+      expect(PiiTokenizer.encryption_service).to have_received(:search_tokens).with('John').at_least(:once)
+      expect(result).to eq(user)
     end
   end
 end

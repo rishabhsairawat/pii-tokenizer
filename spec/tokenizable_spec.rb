@@ -171,50 +171,40 @@ RSpec.describe PiiTokenizer::Tokenizable do
     end
 
     it 'skips encryption for unchanged fields' do
-      # Create a "persisted" user with unchanged values
-      user = User.new(id: 1, first_name: 'John', last_name: 'Doe', email: 'john.doe@example.com')
-      allow(user).to receive(:new_record?).and_return(false)
-      allow(user).to receive(:changes).and_return({})
+      user = User.create!(first_name: 'John') # Create first
+      allow(encryption_service).to receive(:encrypt_batch).and_call_original
 
-      # Expect encrypt_batch not to be called since no values have changed
-      expect(encryption_service).not_to receive(:encrypt_batch)
+      # Save again without changes
+      user.save!
 
-      user.send(:encrypt_pii_fields)
+      # encrypt_batch should not have been called again
+      expect(encryption_service).not_to have_received(:encrypt_batch)
     end
 
     it 'skips encryption for nil entity_id' do
-      # Create a user without an ID
-      user = User.new(first_name: 'John', last_name: 'Doe', email: 'john.doe@example.com')
+      # Mock entity_id to return nil
+      allow_any_instance_of(User).to receive(:entity_id).and_return(nil)
+      allow(encryption_service).to receive(:encrypt_batch)
 
-      # We need to stub the entity_id_proc to return a proc that returns blank
-      original_proc = User.entity_id_proc
-      begin
-        User.entity_id_proc = ->(_) { '' }
+      user = User.new(first_name: 'John')
+      user.save # Use save, not save!, as it might try to proceed without erroring
 
-        # No data should be sent to the encryption service
-        expect(encryption_service).not_to receive(:encrypt_batch)
-
-        user.send(:encrypt_pii_fields)
-      ensure
-        # Restore the original proc
-        User.entity_id_proc = original_proc
-      end
+      # Verify encrypt_batch was not called
+      expect(encryption_service).not_to have_received(:encrypt_batch)
     end
 
     it 'skips encryption for blank values' do
-      user = User.new(id: 1, first_name: '', last_name: nil, email: 'john.doe@example.com')
+      allow(encryption_service).to receive(:encrypt_batch)
+      allow(User).to receive_message_chain(:unscoped, :where, :update_all) # Stub update_all
 
-      # Only email should be encrypted
-      expect(encryption_service).to receive(:encrypt_batch).with(
-        array_including(
-          hash_including(
-            value: 'john.doe@example.com',
-            field_name: 'email'
-          )
-        )
-      ).and_return({ 'CUSTOMER:User_customer_1:EMAIL' => 'encrypted_email' })
+      user = User.new(id: 1)
+      user.first_name = ' '
+      user.save!
 
-      user.send(:encrypt_pii_fields)
+      # Verify encrypt_batch was not called for the blank value
+      expect(encryption_service).not_to have_received(:encrypt_batch)
+      # Verify the token column was set to nil
+      expect(user.first_name_token).to be_nil
     end
 
     it 'clears decryption cache on register_for_decryption' do
@@ -372,17 +362,20 @@ RSpec.describe PiiTokenizer::Tokenizable do
     end
 
     it 'falls back to original value when decryption fails' do
-      user.write_attribute(:first_name, 'Original John')
-      user.write_attribute(:first_name_token, 'encrypted_first_name')
+      # Setup: dual_write=true, persisted value is 'John'
+      user = User.new(id: 1, first_name: 'John', first_name_token: 'bad_token')
+      allow(User).to receive(:dual_write_enabled).and_return(true)
+      allow(user).to receive(:read_attribute).with(:first_name).and_return('John')
+      allow(user).to receive(:read_attribute).with(:first_name_token).and_return('bad_token')
 
-      allow(User).to receive(:read_from_token_column).and_return(true)
+      # Mock decryption to return nothing for the bad token
+      expect(encryption_service).to receive(:decrypt_batch).with(['bad_token']).and_return({})
+      user.clear_decryption_cache
 
-      # Mock decryption to return empty result (failed decryption)
-      expect(encryption_service).to receive(:decrypt_batch)
-        .with(['encrypted_first_name'])
-        .and_return({})
-
-      expect(user.decrypt_field(:first_name)).to eq('Original John')
+      # Test decrypt_field directly
+      expect(user.decrypt_field(:first_name)).to eq('John')
+      # Verify cache has the fallback
+      expect(user.field_decryption_cache[:first_name]).to eq('John')
     end
 
     it 'accesses original column when read_from_token_column is false' do

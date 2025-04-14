@@ -27,8 +27,12 @@ RSpec.describe PiiTokenizer::Tokenizable do
   describe 'field operations' do
     it 'handles missing token columns gracefully' do
       # Create a model with a field that doesn't have a corresponding token column
-      class NoTokenColumnUser
+      class NoTokenColumnUser < ActiveRecord::Base
+        self.table_name = 'users' # Use existing table, add column if needed
         include PiiTokenizer::Tokenizable
+
+        # Add username column if not present (assuming schema modification is ok in test setup)
+        connection.add_column(:users, :username, :string) unless connection.column_exists?(:users, :username)
 
         tokenize_pii fields: %i[username],
                      entity_type: 'user',
@@ -36,22 +40,20 @@ RSpec.describe PiiTokenizer::Tokenizable do
                      dual_write: false,
                      read_from_token: true
 
-        attr_accessor :id, :username
+        # No need for attr_accessor or initialize, AR handles them
+        # attr_accessor :id, :username
+        # def initialize(id:, username:)
+        #   @id = id
+        #   @username = username
+        # end
 
-        def initialize(id:, username:)
-          @id = id
-          @username = username
-        end
-
-        # Mimic ActiveRecord's column checks
-        def has_attribute?(attr)
-          respond_to?(attr)
-        end
-
-        # No *_token field exists
-        def respond_to?(method, include_private = false)
-          method != :username_token && super
-        end
+        # AR handles column checks, remove manual overrides
+        # def has_attribute?(attr)
+        #   respond_to?(attr)
+        # end
+        # def respond_to?(method, include_private = false)
+        #   method != :username_token && super
+        # end
       end
 
       user = NoTokenColumnUser.new(id: 1, username: 'johndoe')

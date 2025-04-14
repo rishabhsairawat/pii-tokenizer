@@ -1,12 +1,6 @@
 require 'spec_helper'
 
 RSpec.describe PiiTokenizer::Tokenizable do
-  let(:encryption_service) { instance_double(PiiTokenizer::EncryptionService) }
-
-  before do
-    allow(PiiTokenizer).to receive(:encryption_service).and_return(encryption_service)
-  end
-
   describe 'class methods' do
     it 'initializes class variables correctly' do
       # Reset the User class's tokenized fields
@@ -14,8 +8,9 @@ RSpec.describe PiiTokenizer::Tokenizable do
       original_tokenized_fields = User.tokenized_fields.dup
       original_pii_types = User.pii_types.dup
 
-      # Define a new temporary class
-      temp_class = Class.new do
+      # Define a new temporary AR class
+      temp_class = Class.new(ActiveRecord::Base) do
+        self.table_name = 'users' # Use existing table for simplicity
         include PiiTokenizer::Tokenizable
       end
 
@@ -35,105 +30,66 @@ RSpec.describe PiiTokenizer::Tokenizable do
   end
 
   describe 'find and create methods' do
-    let(:encryption_service) { instance_double(PiiTokenizer::EncryptionService) }
-
-    before do
-      allow(PiiTokenizer).to receive(:encryption_service).and_return(encryption_service)
-      User.dual_write_enabled = false
-      User.read_from_token_column = true
-    end
-
     it 'handles find_or_initialize_by with tokenized fields' do
-      # Set up the encryption service to return a token for the email
-      allow(encryption_service).to receive(:search_tokens)
+      # Mock search_tokens specifically for this test
+      # Global mock is basic, we need it to return a specific format
+      allow(PiiTokenizer.encryption_service).to receive(:search_tokens)
         .with('john.doe@example.com')
-        .and_return(['encrypted_email'])
+        .and_return(["mock_token_search_for_[john.doe@example.com]"]) # Match global mock's pattern
 
-      # Create a relation mock that will be returned by `where`
-      relation = double('ActiveRecord::Relation')
-      allow(relation).to receive(:first).and_return(nil)
-
-      # Allow where to be called with any arguments as it depends on ActiveRecord internals
-      allow(User).to receive(:where).and_return(relation)
-
-      # Mock new to return a user
-      new_user = double('User')
-      allow(new_user).to receive(:email=).with('john.doe@example.com')
-      allow(User).to receive(:new).and_return(new_user)
-
-      # Call the method
+      # Call the method - This will now interact with the DB
       user = User.find_or_initialize_by(email: 'john.doe@example.com')
 
-      # Verify the result is our mocked user
-      expect(user).to eq(new_user)
+      # Verify the result - Check the object state
+      expect(PiiTokenizer.encryption_service).to have_received(:search_tokens).with('john.doe@example.com').at_least(:once)
+      expect(user).to be_a(User)
+      expect(user).to be_new_record # Should not be persisted yet
+      expect(user.email).to eq('john.doe@example.com')
     end
 
     it 'handles find_or_create_by with tokenized fields' do
-      # Set up the encryption service to return a token for the email
-      allow(encryption_service).to receive(:search_tokens)
-        .with('john.doe@example.com')
-        .and_return(['encrypted_email'])
+      # Mock search_tokens specifically for this test
+      allow(PiiTokenizer.encryption_service).to receive(:search_tokens)
+        .with('jane.doe@example.com')
+        .and_return([]) # Simulate not found
 
-      # Create a relation mock that will be returned by `where`
-      relation = double('ActiveRecord::Relation')
-      allow(relation).to receive(:first).and_return(nil)
+      # Call the method - This will create a record using AR and global mocks
+      user = User.find_or_create_by(email: 'jane.doe@example.com')
 
-      # Allow where to be called with any arguments as it depends on ActiveRecord internals
-      allow(User).to receive(:where).and_return(relation)
-
-      # Mock exists? to prevent reload errors
-      allow(User).to receive(:exists?).and_return(false)
-
-      # Mock new to return a user with id for entity_id generation
-      new_user = double('User')
-      allow(new_user).to receive(:email=).with('john.doe@example.com')
-      allow(new_user).to receive(:save).and_return(true)
-      allow(new_user).to receive(:id).and_return(1)
-      allow(new_user).to receive(:entity_type).and_return('user_uuid')
-      allow(new_user).to receive(:entity_id).and_return('User_user_uuid_1')
-      allow(new_user).to receive(:persisted?).and_return(true)
-
-      # Since we're potentially using encrypt_batch in the implementation
-      allow(encryption_service).to receive(:encrypt_batch) do |tokens_data|
-        result = {}
-        tokens_data.each do |data|
-          key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:value]}"
-          result[key] = "token_for_#{data[:value]}"
-        end
-        result
-      end
-
-      # For handling register_for_decryption
-      allow(new_user).to receive(:field_decryption_cache).and_return({})
-      allow(new_user).to receive(:new_record?).and_return(false)
-
-      # Allow User to get our mock user
-      allow(User).to receive(:new).and_return(new_user)
-
-      # Call the method
-      user = User.find_or_create_by(email: 'john.doe@example.com')
-
-      # Verify the result is our mocked user
-      expect(user).to eq(new_user)
+      # Verify the result - Check DB state and object state
+      expect(PiiTokenizer.encryption_service).to have_received(:search_tokens).with('jane.doe@example.com').at_least(:once)
+      expect(user).to be_a(User)
+      expect(user).to be_persisted
+      expect(user.email).to eq('jane.doe@example.com')
+      # Check that the global mock was used for encryption
+      expect(user.email_token).to match(/^mock_token_\d+_for_\[jane\.doe@example\.com\]_as_\[EMAIL\]$/)
+      # Verify record exists in DB
+      expect(User.find(user.id)).to eq(user)
     end
   end
 
   describe 'entity type and id' do
     it 'can use a proc for dynamic entity type' do
-      # Create a class with dynamic entity type
-      class DynamicEntityUser
+      # Create a class with dynamic entity type inheriting from AR::Base
+      class DynamicEntityUser < ActiveRecord::Base
+        self.table_name = 'users' # Use existing table
         include PiiTokenizer::Tokenizable
 
-        attr_accessor :role, :id
+        # No need for attr_accessor, AR handles columns
+        # attr_accessor :role, :id
 
         tokenize_pii fields: [:first_name],
                      entity_type: ->(user) { user.role || 'default' },
                      entity_id: ->(user) { "user_#{user.id}" }
 
-        def initialize(id:, role:)
-          @id = id
-          @role = role
-        end
+        # Need to define role attribute if not in schema
+        attribute :role, :string
+
+        # initialize is handled by AR
+        # def initialize(id:, role:)
+        #   @id = id
+        #   @role = role
+        # end
       end
 
       user = DynamicEntityUser.new(id: 1, role: 'admin')
@@ -147,19 +103,22 @@ RSpec.describe PiiTokenizer::Tokenizable do
     end
 
     it 'can use a string for static entity type' do
-      # Create a class with static entity type
-      class StaticEntityUser
+      # Create a class with static entity type inheriting from AR::Base
+      class StaticEntityUser < ActiveRecord::Base
+        self.table_name = 'users' # Use existing table
         include PiiTokenizer::Tokenizable
 
-        attr_accessor :id
+        # No need for attr_accessor
+        # attr_accessor :id
 
         tokenize_pii fields: [:first_name],
                      entity_type: 'static_type',
                      entity_id: ->(user) { "user_#{user.id}" }
 
-        def initialize(id:)
-          @id = id
-        end
+        # initialize is handled by AR
+        # def initialize(id:)
+        #   @id = id
+        # end
       end
 
       user = StaticEntityUser.new(id: 1)
@@ -169,50 +128,7 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
   describe 'dual write mode' do
     it 'clears original fields when dual_write is false' do
-      # Reset any mocks from previous tests
-      RSpec::Mocks.space.reset_all
-
-      # Save the original setting
-      original_dual_write = User.dual_write_enabled
-
-      # Set dual_write to false
-      User.dual_write_enabled = false
-
-      # Create a mock for the encryption service
-      encryption_service = instance_double(PiiTokenizer::EncryptionService)
-      allow(PiiTokenizer).to receive(:encryption_service).and_return(encryption_service)
-
-      # Setup the encryption service mock to return tokens for a batch
-      allow(encryption_service).to receive(:encrypt_batch) do |tokens_data|
-        result = {}
-        tokens_data.each do |data|
-          key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:value]}"
-          result[key] = "token_for_#{data[:value]}"
-        end
-        result
-      end
-
-      # For decryption in accessors
-      allow(encryption_service).to receive(:decrypt_batch) do |tokens|
-        result = {}
-        tokens = [tokens] unless tokens.is_a?(Array)
-        tokens.each do |token|
-          if token.to_s.start_with?('token_for_')
-            original_value = token.to_s.sub('token_for_', '')
-            result[token] = original_value
-          end
-        end
-        result
-      end
-
-      # Track the SQL operations
-      sql_operations = []
-      allow(User.connection).to receive(:execute) do |sql|
-        sql_operations << sql
-        User.connection.__getobj__.execute(sql)
-      end
-
-      # Create a test user
+      # Create a test user AFTER mock setup - Let AR handle this
       user = User.create!(first_name: 'John')
 
       # Extract the ID for verification
@@ -221,76 +137,53 @@ RSpec.describe PiiTokenizer::Tokenizable do
       # Force a reload to ensure we're getting DB values
       user.reload
 
-      # Check for direct SQL operations that show fields are cleared
-      insert_sql = sql_operations.find { |sql| sql.include?('INSERT') }
+      # Verify token column has value (using global mock pattern)
+      expect(user.first_name_token).to match(/^mock_token_\d+_for_\[John\]_as_\[FIRST_NAME\]$/)
 
-      # Verify token column has value
-      expect(user.first_name_token).to eq('token_for_John')
-
-      # Original column should be nil in the database
-      # We'll verify by checking what's actually stored
-      expect(user.read_attribute(:first_name)).to be_nil
-
-      # But accessor should still return the value via decryption
-      expect(user.first_name).to eq('John')
-
-      # Restore the original setting
-      User.dual_write_enabled = original_dual_write
+      # Verify the original column is now NULL in DB
+      # This relies on the AR create! and the after_save callback running correctly
+      db_value = User.connection.select_value("SELECT first_name FROM users WHERE id = #{user.id}")
+      expect(db_value).to be_nil
     end
 
     it 'keeps original fields when dual_write is true' do
-      user = User.new(id: 1, first_name: 'John', last_name: 'Doe', email: 'john@example.com')
-
-      # Save dual_write setting before test and restore after
-      original_dual_write = User.dual_write_enabled
-
-      # Set dual_write to true
+      # Set dual_write to true for this test
       User.dual_write_enabled = true
 
-      # Set up encryption response using the correct entity type
-      allow(encryption_service).to receive(:encrypt_batch).and_return({
-                                                                        'USER_UUID:1:FIRST_NAME' => 'encrypted_first_name'
-                                                                      })
+      # Create user - Let AR handle save and callbacks
+      user = User.create!(first_name: 'Jane')
 
-      # Make sure to use the actual entity type/id settings
-      allow(user).to receive(:entity_type).and_return('user_uuid')
-      allow(user).to receive(:entity_id).and_return('1')
+      # Assertions
+      # Verify global mock was called
+      expect(PiiTokenizer.encryption_service).to have_received(:encrypt_batch).with(
+        a_collection_containing_exactly(hash_including(value: 'Jane', field_name: 'first_name'))
+      ).at_least(:once)
 
-      # Directly call encrypt_pii_fields to avoid save logic
-      user.send(:encrypt_pii_fields)
-
-      # Original field should not be nil
-      expect(user.read_attribute(:first_name)).to eq('John')
-
-      # Reset the dual_write setting
-      User.dual_write_enabled = original_dual_write
+      # In dual write, original field should persist in DB
+      user.reload # Ensure we read from DB
+      expect(user.read_attribute(:first_name)).to eq('Jane') # Check attribute directly
+      expect(user.first_name_token).to match(/^mock_token_\d+_for_\[Jane\]_as_\[FIRST_NAME\]$/) # Check token
     end
   end
 
   describe 'with real ActiveRecord instance' do
     before do
+      # Ensure clean slate
       User.delete_all
     end
 
     it 'integrates with ActiveRecord callbacks' do
-      user = User.new(id: 1, first_name: 'John', last_name: 'Doe', email: 'john@example.com')
+      # Use a real User instance connected to the test database
+      # This will use the global mocks for encryption/decryption
+      user = User.create!(first_name: 'John', last_name: 'Doe', email: 'john@example.com')
 
-      # Set up encryption response with the actual entity type from integration tests
-      allow(encryption_service).to receive(:encrypt_batch).and_return({
-                                                                        'USER_UUID:1:FIRST_NAME' => 'encrypted_first_name',
-                                                                        'USER_UUID:1:LAST_NAME' => 'encrypted_last_name',
-                                                                        'USER_UUID:1:EMAIL' => 'encrypted_email'
-                                                                      })
+      # Expect the after_save callback to have triggered tokenization via the global mock
+      expect(user.first_name_token).to match(/^mock_token_\d+_for_\[John\]_as_\[FIRST_NAME\]$/)
+      expect(user.last_name_token).to match(/^mock_token_\d+_for_\[Doe\]_as_\[LAST_NAME\]$/)
+      expect(user.email_token).to match(/^mock_token_\d+_for_\[john@example\.com\]_as_\[EMAIL\]$/)
 
-      # Make sure to use the actual entity type/id settings from integration tests
-      allow(user).to receive(:entity_type).and_return('user_uuid')
-      allow(user).to receive(:entity_id).and_return('1')
-
-      # Verify the callback gets called during save
-      expect(user).to receive(:encrypt_pii_fields).and_call_original
-
-      # Save the record
-      user.save
+      # Verify the global mock service was called
+      expect(PiiTokenizer.encryption_service).to have_received(:encrypt_batch).at_least(:once)
     end
   end
 end

@@ -1,5 +1,7 @@
 require 'bundler/setup'
 require 'simplecov'
+require 'active_record'
+require 'database_cleaner'
 
 # Configure SimpleCov for test coverage reporting
 if ENV['COVERAGE'] == 'true'
@@ -23,7 +25,6 @@ if ENV['COVERAGE'] == 'true'
 end
 
 require 'pii_tokenizer'
-require 'active_record'
 begin
   require 'pry'
 rescue LoadError
@@ -70,6 +71,62 @@ ActiveRecord::Base.establish_connection(
   database: ':memory:'
 )
 
+# Mock Encryption Service Implementation
+module MockEncryptionService
+  # Mocks encrypt_batch to return predictable tokens based on input data
+  def mock_encrypt_batch(tokens_data)
+    result = {}
+    # Ensure tokens_data is an array, default to empty if nil/unexpected type
+    data_to_process = Array(tokens_data)
+    data_to_process.each_with_index do |data, index|
+      # Validate input data more carefully
+      if data.is_a?(Hash) && data[:entity_type] && data[:entity_id] && data[:pii_type] && data[:field_name] && data.key?(:value)
+        key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:field_name]}"
+        result[key] = "mock_token_#{index}_for_[#{data[:value]}]_as_[#{data[:pii_type]}]"
+      else
+        puts "WARN: Invalid data format passed to mock_encrypt_batch: #{data.inspect}"
+      end
+    end
+    # Always return a hash, even if processing failed or input was empty
+    result
+  end
+
+  # Mocks decrypt_batch to reverse the mock token generation
+  def mock_decrypt_batch(tokens)
+    result = {}
+    Array(tokens).each do |token|
+      token_str = token.to_s
+      # Attempt to parse the mock token format
+      match = token_str.match(/^mock_token_\d+_for_\[(.*?)\]_as_\[(.*?)\]$/)
+      if match
+        original_value = match[1]
+        # pii_type = match[2] # PII type is available if needed
+        result[token_str] = original_value
+      else
+        # Handle edge cases or specific tokens needed by certain tests if the generic pattern doesn't match
+        # Example:
+        # case token_str
+        # when 'specific_test_token'
+        #   result[token_str] = 'specific_decrypted_value'
+        # else
+        #   puts "WARN: Mock decrypt could not parse token: #{token_str}"
+        # end
+      end
+    end
+    result
+  end
+
+  # Mocks search_tokens - returns a predictable token based on value for testing finders
+  # Note: This assumes the token generated here would match one potentially stored.
+  # Tests might need to mock this specifically if they depend on *exact* token values from a prior save.
+  def mock_search_tokens(value)
+    return [] if value.blank?
+    # Generate a plausible token format that *might* exist in the DB for the value.
+    # This is a simplification; real search might be more complex.
+    ["mock_token_search_for_[#{value}]"]
+  end
+end
+
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
   config.example_status_persistence_file_path = '.rspec_status'
@@ -80,6 +137,9 @@ RSpec.configure do |config|
   config.expect_with :rspec do |c|
     c.syntax = :expect
   end
+
+  # Use transactional fixtures for cleaner test runs
+  # config.use_transactional_fixtures = true # Remove or comment out if using database_cleaner
 
   # Run each test in a transaction
   config.around do |example|
@@ -102,6 +162,41 @@ RSpec.configure do |config|
       config.batch_size = 5
       config.logger = null_logger
       config.log_level = Logger::FATAL
+    end
+
+    # DatabaseCleaner configuration
+    DatabaseCleaner.strategy = :transaction
+    DatabaseCleaner.clean_with(:truncation)
+  end
+
+  # Include the mock methods helpers into tests
+  config.include MockEncryptionService
+
+  # Setup mocks before each test
+  config.before(:each) do
+    # Create a fresh instance double for the service for each test
+    mock_service = instance_double(PiiTokenizer::EncryptionService)
+
+    # Stub the service methods to call our mock helpers
+    allow(mock_service).to receive(:encrypt_batch) { |data| mock_encrypt_batch(data) }
+    allow(mock_service).to receive(:decrypt_batch) { |tokens| mock_decrypt_batch(tokens) }
+    allow(mock_service).to receive(:search_tokens) { |value| mock_search_tokens(value) }
+
+    # Configure the PiiTokenizer to use our mocked service instance directly
+    allow(PiiTokenizer).to receive(:encryption_service).and_return(mock_service)
+
+    # Reset model configurations to defaults before each test
+    [User, InternalUser, Contact].each do |model|
+      # Assuming defaults are dual_write=false, read_from_token=true
+      # Adjust if your actual defaults differ
+      model.dual_write_enabled = false
+      model.read_from_token_column = true
+    end
+  end
+
+  config.around(:each) do |example|
+    DatabaseCleaner.cleaning do
+      example.run
     end
   end
 end
