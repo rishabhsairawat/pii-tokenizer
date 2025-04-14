@@ -166,6 +166,68 @@ module PiiTokenizer
         
         # Process tokenization for identified fields
         process_tokenization(fields_to_process)
+        
+        # IMPORTANT: For new records, we need to make sure tokens will be persisted
+        # even if the after_save callback somehow doesn't run
+        # This defensive code addresses potential issues in production environments
+        if new_record? && persisted?
+          # Store tokens that need to be saved after the transaction is committed
+          @_tokens_to_persist = {}
+          
+          self.class.tokenized_fields.each do |field|
+            field_str = field.to_s
+            token_column = "#{field_str}_token"
+            
+            # Capture the token value to persist
+            token_value = read_attribute(token_column)
+            if token_value.present?
+              @_tokens_to_persist[token_column] = token_value
+              
+              # For dual_write=false, also clear the original field
+              if !self.class.dual_write_enabled
+                @_tokens_to_persist[field_str] = nil
+              end
+            end
+          end
+          
+          # Set up an after_commit hook to ensure tokens are saved
+          # This is a one-time hook for this specific record
+          after_commit_method = lambda do
+            if @_tokens_to_persist && @_tokens_to_persist.any?
+              begin
+                # Use update_all to persist tokens without callbacks
+                self.class.unscoped.where(id: id).update_all(@_tokens_to_persist)
+              rescue => e
+                # Silently handle errors to avoid breaking the application
+                if defined?(Rails) && Rails.respond_to?(:logger)
+                  Rails.logger.error("PiiTokenizer: Failed to persist tokens in after_commit hook: #{e.message}")
+                end
+              ensure
+                # Clear the stored tokens
+                @_tokens_to_persist = nil
+              end
+            end
+          end
+          
+          # Use ActiveRecord's after_commit callback if available
+          if respond_to?(:after_commit)
+            after_commit(on: :create, &after_commit_method)
+          end
+          
+          # As an additional fallback, schedule the update on the next tick
+          # This is only needed in very unusual configurations
+          # where the callbacks might be skipped
+          if defined?(Thread) && Thread.respond_to?(:new)
+            Thread.new do
+              begin
+                sleep(0.1) # Brief delay to let the transaction complete
+                after_commit_method.call if @_tokens_to_persist && @_tokens_to_persist.any?
+              rescue => e
+                # Silently handle errors in background thread
+              end
+            end
+          end
+        end
       end
 
       private

@@ -1,6 +1,6 @@
 require 'spec_helper'
 
-RSpec.describe "AfterSaveTokenizationBug" do
+RSpec.describe "PiiTokenizer AfterSave Integration" do
   before do
     # Clear DB
     User.delete_all
@@ -37,7 +37,7 @@ RSpec.describe "AfterSaveTokenizationBug" do
       )
     end
 
-    it "properly sets token values in the after_save callback" do
+    it "persists token values while preserving original fields" do
       # Create a test user with minimal mocking
       user = User.new(first_name: "Jane", last_name: "Smith", email: "jane.smith@example.com")
       
@@ -96,7 +96,7 @@ RSpec.describe "AfterSaveTokenizationBug" do
       )
     end
 
-    it "properly sets token values and clears original fields in the after_save callback" do
+    it "persists token values and clears original fields" do
       # Create a test user with minimal mocking
       user = User.new(first_name: "Jane", last_name: "Smith", email: "jane.smith@example.com")
       
