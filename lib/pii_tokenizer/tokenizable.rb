@@ -619,6 +619,25 @@ module PiiTokenizer
             Rails.logger.warn("PiiTokenizer: No updates to apply to database for #{self.class.name} ##{id}")
           end
         end
+
+        # Add this debug line:
+        if defined?(Rails) && Rails.respond_to?(:logger)
+          Rails.logger.info("PiiTokenizer: fields to process: #{self.class.tokenized_fields.inspect}")
+          Rails.logger.info("PiiTokenizer: tokens_data.size: #{tokens_data.size}")
+        end
+
+        # If tokens_data is empty but we have fields that should be tokenized, log it:
+        if tokens_data.empty? && self.class.tokenized_fields.any?
+          if defined?(Rails) && Rails.respond_to?(:logger)
+            Rails.logger.warn("PiiTokenizer: No fields added to tokens_data despite having tokenized fields")
+            self.class.tokenized_fields.each do |field|
+              field_str = field.to_s
+              value = get_field_value(field)
+              pii_type = self.class.pii_types[field_str]
+              Rails.logger.warn("PiiTokenizer: Field #{field_str}, value=#{value.inspect}, pii_type=#{pii_type.inspect}")
+            end
+          end
+        end
       end
 
       # Update the database with tokens after save
