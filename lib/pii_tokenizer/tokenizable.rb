@@ -473,7 +473,9 @@ module PiiTokenizer
 
       # Process tokenization after saving a new record
       def process_after_save_tokenization
-        Rails.logger.info("PiiTokenizer: process_after_save_tokenization called for #{self.class.name} ##{id}") if defined?(Rails) && Rails.respond_to?(:logger)
+        if defined?(Rails) && Rails.respond_to?(:logger)
+          Rails.logger.info("PiiTokenizer: process_after_save_tokenization called for #{self.class.name} ##{id}")
+        end
         
         return unless persisted?
         return if self.class.tokenized_fields.empty?
@@ -491,7 +493,35 @@ module PiiTokenizer
         return if entity_id.blank?
 
         # Only process after_save for new records 
-        return unless respond_to?(:previous_changes) && previous_changes.key?('id')
+        is_new_record = respond_to?(:previous_changes) && previous_changes.key?('id')
+        
+        if defined?(Rails) && Rails.respond_to?(:logger)
+          Rails.logger.info("PiiTokenizer: Is new record? #{is_new_record}")
+        end
+        
+        return unless is_new_record
+        
+        # Debug: analyze all tokenized fields to see why they might not be processed
+        if defined?(Rails) && Rails.respond_to?(:logger)
+          Rails.logger.info("PiiTokenizer: Analyzing #{self.class.tokenized_fields.size} tokenized fields")
+          
+          self.class.tokenized_fields.each do |field|
+            field_str = field.to_s
+            token_column = "#{field_str}_token"
+            
+            # Get current values
+            value = get_field_value(field)
+            token = read_attribute(token_column)
+            pii_type = self.class.pii_types[field_str]
+            
+            Rails.logger.info("PiiTokenizer: Field #{field_str}")
+            Rails.logger.info("  - Value: #{value.inspect}")
+            Rails.logger.info("  - Token: #{token.inspect}")
+            Rails.logger.info("  - PII Type: #{pii_type.inspect}")
+            Rails.logger.info("  - Value blank? #{value.blank?}")
+            Rails.logger.info("  - Token present? #{token.present?}")
+          end
+        end
         
         # For new records, we should always update the database to ensure token values are persisted
         # The changes might already exist in memory from the before_save callback
@@ -508,8 +538,8 @@ module PiiTokenizer
           # Get value and skip if blank
           value = get_field_value(field)
           
-          if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger.debug?
-            Rails.logger.debug("PiiTokenizer: Processing field #{field_str}, value=#{value.inspect}")
+          if defined?(Rails) && Rails.respond_to?(:logger)
+            Rails.logger.info("PiiTokenizer: Processing field #{field_str}, value=#{value.inspect}")
           end
           
           next if value.blank?
@@ -534,7 +564,13 @@ module PiiTokenizer
             # No token yet, need to encrypt the value
             # Get PII type for this field
             pii_type = self.class.pii_types[field_str]
-            next if pii_type.blank?
+            
+            if pii_type.blank?
+              if defined?(Rails) && Rails.respond_to?(:logger)
+                Rails.logger.warn("PiiTokenizer: No PII type found for field #{field_str}, skipping")
+              end
+              next
+            end
             
             # Add to tokenization batch
             tokens_data << {
@@ -551,60 +587,110 @@ module PiiTokenizer
           end
         end
         
+        # Check if we have any tokens to process
+        if defined?(Rails) && Rails.respond_to?(:logger)
+          Rails.logger.info("PiiTokenizer: tokens_data.size=#{tokens_data.size}")
+          if tokens_data.empty?
+            Rails.logger.warn("PiiTokenizer: No tokens to process! Check earlier logs for why fields were skipped.")
+          end
+        end
+        
         # Process any fields that still need encryption
         if tokens_data.any?
           if defined?(Rails) && Rails.respond_to?(:logger)
             Rails.logger.info("PiiTokenizer: Encrypting batch of #{tokens_data.size} tokens")
+            Rails.logger.info("PiiTokenizer: tokens_data: #{tokens_data.inspect}")
           end
           
-          # Encrypt in batch
-          key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-          
-          # Log the returned keys for debugging
-          if defined?(Rails) && Rails.respond_to?(:logger)
-            Rails.logger.info("PiiTokenizer: encrypt_batch returned #{key_to_token.size} tokens")
-            Rails.logger.debug("PiiTokenizer: key_to_token keys: #{key_to_token.keys.inspect}") if Rails.logger.debug?
-          end
-          
-          # Process encrypted values
-          tokens_data.each do |token_data|
-            field = token_data[:field_name]
-            key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
+          begin
+            # Encrypt in batch
+            key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
             
-            # Debug logging for key generation and matching
+            # Log the returned keys for debugging
             if defined?(Rails) && Rails.respond_to?(:logger)
-              Rails.logger.info("PiiTokenizer: Generated key for #{field}: '#{key}'")
-              Rails.logger.info("PiiTokenizer: Key exists in key_to_token? #{key_to_token.key?(key)}")
+              Rails.logger.info("PiiTokenizer: encrypt_batch returned #{key_to_token.size} tokens")
+              Rails.logger.info("PiiTokenizer: key_to_token: #{key_to_token.inspect}")
+            end
+            
+            # Process encrypted values
+            tokens_data.each do |token_data|
+              field = token_data[:field_name]
+              key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
               
-              # Add extensive debug logging if key doesn't exist
-              unless key_to_token.key?(key)
-                Rails.logger.warn("PiiTokenizer: Key not found in key_to_token for field #{field}")
-                debug_key_format(token_data, key_to_token)
+              # Debug logging for key generation and matching
+              if defined?(Rails) && Rails.respond_to?(:logger)
+                Rails.logger.info("PiiTokenizer: Generated key for #{field}: '#{key}'")
+                Rails.logger.info("PiiTokenizer: Key exists in key_to_token? #{key_to_token.key?(key)}")
+                
+                # Try alternative key format
+                alt_key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:field_name]}"
+                Rails.logger.info("PiiTokenizer: Alternative key: '#{alt_key}'")
+                Rails.logger.info("PiiTokenizer: Alt key exists? #{key_to_token.key?(alt_key)}")
+                
+                # Show all keys in response
+                Rails.logger.info("PiiTokenizer: All keys in response: #{key_to_token.keys.inspect}")
+              end
+              
+              # First try the standard key format
+              if key_to_token.key?(key)
+                token = key_to_token[key]
+                token_column = "#{field}_token"
+                
+                # Write token to token column in memory
+                write_attribute(token_column, token)
+                
+                # Add to updates for database
+                db_updates[token_column] = token
+                
+                if defined?(Rails) && Rails.respond_to?(:logger)
+                  Rails.logger.info("PiiTokenizer: Setting token for #{field}: #{token}")
+                end
+                
+                # If not dual_write, clear the original field in DB
+                if !self.class.dual_write_enabled
+                  db_updates[field] = nil
+                end
+                
+                # Cache decrypted value
+                field_decryption_cache[field.to_sym] = token_data[:value]
+              else
+                # Try alternative key format (field_name instead of value)
+                alt_key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:field_name]}"
+                
+                if key_to_token.key?(alt_key)
+                  token = key_to_token[alt_key]
+                  token_column = "#{field}_token"
+                  
+                  if defined?(Rails) && Rails.respond_to?(:logger)
+                    Rails.logger.info("PiiTokenizer: Found token using alternative key format for #{field}")
+                  end
+                  
+                  # Write token to token column in memory
+                  write_attribute(token_column, token)
+                  
+                  # Add to updates for database
+                  db_updates[token_column] = token
+                  
+                  # If not dual_write, clear the original field in DB
+                  if !self.class.dual_write_enabled
+                    db_updates[field] = nil
+                  end
+                  
+                  # Cache decrypted value
+                  field_decryption_cache[field.to_sym] = token_data[:value]
+                else
+                  # Log failure if neither key format works
+                  if defined?(Rails) && Rails.respond_to?(:logger)
+                    Rails.logger.warn("PiiTokenizer: Could not find token for field #{field} with any key format")
+                  end
+                end
               end
             end
-            
-            next unless key_to_token.key?(key)
-            
-            token = key_to_token[key]
-            token_column = "#{field}_token"
-            
-            # Write token to token column in memory
-            write_attribute(token_column, token)
-            
-            # Add to updates for database
-            db_updates[token_column] = token
-            
+          rescue => e
             if defined?(Rails) && Rails.respond_to?(:logger)
-              Rails.logger.info("PiiTokenizer: Setting token for #{field}: #{token}")
+              Rails.logger.error("PiiTokenizer: Error during encrypt_batch: #{e.class.name} - #{e.message}")
+              Rails.logger.error(e.backtrace.join("\n")) if e.backtrace
             end
-            
-            # If not dual_write, clear the original field in DB
-            if !self.class.dual_write_enabled
-              db_updates[field] = nil
-            end
-            
-            # Cache decrypted value
-            field_decryption_cache[field.to_sym] = token_data[:value]
           end
         end
         
@@ -612,30 +698,24 @@ module PiiTokenizer
         if db_updates.any?
           if defined?(Rails) && Rails.respond_to?(:logger)
             Rails.logger.info("PiiTokenizer: Updating database with #{db_updates.size} changes: #{db_updates.keys.join(', ')}")
+            Rails.logger.info("PiiTokenizer: db_updates: #{db_updates.inspect}")
           end
-          self.class.unscoped.where(id: id).update_all(db_updates)
+          
+          begin
+            self.class.unscoped.where(id: id).update_all(db_updates)
+            
+            if defined?(Rails) && Rails.respond_to?(:logger)
+              Rails.logger.info("PiiTokenizer: Database update completed successfully")
+            end
+          rescue => e
+            if defined?(Rails) && Rails.respond_to?(:logger)
+              Rails.logger.error("PiiTokenizer: Error during database update: #{e.class.name} - #{e.message}")
+              Rails.logger.error(e.backtrace.join("\n")) if e.backtrace
+            end
+          end
         else
           if defined?(Rails) && Rails.respond_to?(:logger)
             Rails.logger.warn("PiiTokenizer: No updates to apply to database for #{self.class.name} ##{id}")
-          end
-        end
-
-        # Add this debug line:
-        if defined?(Rails) && Rails.respond_to?(:logger)
-          Rails.logger.info("PiiTokenizer: fields to process: #{self.class.tokenized_fields.inspect}")
-          Rails.logger.info("PiiTokenizer: tokens_data.size: #{tokens_data.size}")
-        end
-
-        # If tokens_data is empty but we have fields that should be tokenized, log it:
-        if tokens_data.empty? && self.class.tokenized_fields.any?
-          if defined?(Rails) && Rails.respond_to?(:logger)
-            Rails.logger.warn("PiiTokenizer: No fields added to tokens_data despite having tokenized fields")
-            self.class.tokenized_fields.each do |field|
-              field_str = field.to_s
-              value = get_field_value(field)
-              pii_type = self.class.pii_types[field_str]
-              Rails.logger.warn("PiiTokenizer: Field #{field_str}, value=#{value.inspect}, pii_type=#{pii_type.inspect}")
-            end
           end
         end
       end
