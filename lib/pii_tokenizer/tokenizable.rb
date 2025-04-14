@@ -153,8 +153,7 @@ module PiiTokenizer
         # Skip if no tokenized fields or if callbacks are disabled
         return if self.class.tokenized_fields.empty?
         return if instance_variable_defined?(:@_skip_tokenization_callbacks) &&
-                  instance_variable_get(:@_skip_tokenization_callbacks)
-
+                  instance_variable_get(:@_skip_tokenization_callbacks)  
         # Get entity information
         entity_type = self.class.entity_type_proc.call(self)
         entity_id = self.class.entity_id_proc.call(self)
@@ -218,11 +217,11 @@ module PiiTokenizer
                       read_attribute(field_str)
                     end
             
-            # Skip nil values
-            next if value.nil?
-            
-            # Skip blank values
-            next if value.respond_to?(:blank?) && value.blank?
+            # Handle nil values by adding to fields_to_process for proper nullification
+            if value.nil? || (value.respond_to?(:blank?) && value.blank?)
+              fields_to_process << field
+              next
+            end
             
             # This field needs tokenization
             fields_to_process << field
@@ -325,7 +324,8 @@ module PiiTokenizer
           token_column = "#{field}_token"
           write_attribute(token_column, nil)
           
-          # If dual-write is enabled, also clear the original field
+          # If dual-write is enabled, also clear the original field 
+          # (though it might already be nil from setter)
           if self.class.dual_write_enabled
             write_attribute(field.to_s, nil)
           end
@@ -353,10 +353,15 @@ module PiiTokenizer
           # Write token to token column
           write_attribute(token_column, token)
           
-          # Clear original field if not dual-writing
-          write_attribute(field, nil) unless self.class.dual_write_enabled
+          # In dual-write mode, preserve the original field value
+          if self.class.dual_write_enabled
+            write_attribute(field, token_data[:value])
+          else
+            # In non-dual-write mode, clear the original field
+            write_attribute(field, nil)
+          end
           
-          # Cache decrypted value
+          # Cache decrypted value 
           field_decryption_cache[field.to_sym] = token_data[:value]
         end
       end
@@ -454,7 +459,15 @@ module PiiTokenizer
           
           # Add to updates for database
           updates[token_column] = token
-          updates[field] = nil unless self.class.dual_write_enabled
+          
+          # If not dual_write, clear the original field, otherwise preserve it
+          if !self.class.dual_write_enabled
+            updates[field] = nil
+            write_attribute(field, nil)
+          else
+            # In dual_write, preserve original value unless already changed
+            write_attribute(field, token_data[:value])
+          end
           
           # Cache decrypted value
           field_decryption_cache[field.to_sym] = token_data[:value]
@@ -512,7 +525,17 @@ module PiiTokenizer
             end
 
             # Otherwise, return the plaintext value
-            read_attribute(field)
+            value = read_attribute(field)
+            
+            # If we don't have a plaintext value but we have a token, try to decrypt it
+            if value.nil? && !self.class.read_from_token_column
+              token_column = "#{field}_token"
+              if respond_to?(token_column) && read_attribute(token_column).present?
+                return decrypt_field(field)
+              end
+            end
+            
+            value
           end
         end
 
@@ -563,7 +586,15 @@ module PiiTokenizer
             instance_variable_set("@original_#{field}", value)
 
             # Also need to set the attribute for the record to be dirty
-            super(value)
+            if self.class.dual_write_enabled
+              # In dual-write mode, update the original field
+              super(value)
+            else
+              # In non-dual-write mode, don't update the original field
+              # but still mark it as changed
+              send(:attribute_will_change!, "#{field}_token") if respond_to?(:attribute_will_change!)
+              super(value)
+            end
           end
         end
       end
