@@ -21,324 +21,6 @@ module PiiTokenizer
 
     # Module containing the primary instance methods
     module InstanceMethods
-      # Override save method to securely handle tokenized fields
-      def save(*args, &block)
-        return super(*args, &block) if self.class.tokenized_fields.empty?
-
-        # Track if this is a new record
-        new_record = new_record?
-
-        # Early check to see if entity_id is already available for new records
-        # If it is, we can do tokenization in a single step
-        entity_id_available = false
-        if new_record
-          # Try to get the entity_id and see if it's present
-          entity_id = self.class.entity_id_proc.call(self)
-          entity_id_available = entity_id.present?
-        end
-
-        # For new records without dual_write, we need to store the values in memory
-        # and prevent them from being saved to the database
-        if new_record && !self.class.dual_write_enabled
-          # If entity_id is available, we can process tokenization directly
-          if entity_id_available
-            # Get entity info needed for tokenization
-            entity_type = self.class.entity_type_proc.call(self)
-
-            # Prepare to tokenize fields that have values
-            tokens_data = []
-            self.class.tokenized_fields.each do |field|
-              field_str = field.to_s
-              value = read_attribute(field_str)
-
-              if value.nil?
-                # Clear this field in memory
-                write_attribute(field_str, nil)
-                # Make sure the token column is nil too
-                write_attribute("#{field_str}_token", nil)
-                next
-              end
-
-              # Get the PII type
-              pii_type = self.class.pii_types[field_str]
-              next if pii_type.blank?
-
-              # Add to tokenization batch
-              tokens_data << {
-                value: value,
-                entity_id: entity_id,
-                entity_type: entity_type,
-                field_name: field_str,
-                pii_type: pii_type
-              }
-
-              # Store the original value for accessor
-              instance_variable_set("@original_#{field}", value)
-
-              # Clear the field so it's not saved to database
-              write_attribute(field_str, nil)
-            end
-
-            # Process tokenization if we have data
-            unless tokens_data.empty?
-              key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-
-              # Update token columns in memory before saving
-              tokens_data.each do |token_data|
-                field = token_data[:field_name]
-                key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-                next unless key_to_token.key?(key)
-
-                token = key_to_token[key]
-                token_column = "#{field}_token"
-
-                # Set the token in memory
-                write_attribute(token_column, token)
-
-                # Store in decryption cache
-                field_decryption_cache[field.to_sym] = token_data[:value]
-              end
-            end
-
-            # Now save with the tokenized values (single DB operation)
-            result = super(*args, &block)
-            result
-          else
-            # Store original values in memory before clearing them from the record
-            original_values = {}
-            self.class.tokenized_fields.each do |field|
-              field_str = field.to_s
-              original_values[field] = read_attribute(field_str)
-              # Clear the attribute so it's not included in SQL insert
-              write_attribute(field_str, nil)
-            end
-
-            # Let ActiveRecord handle the initial save (without sensitive data)
-            result = super(*args, &block)
-            return false unless result
-
-            # After save, restore the original values in memory for tokenization
-            original_values.each do |field, value|
-              instance_variable_set("@original_#{field}", value)
-            end
-
-            # Now handle tokenization with the in-memory values
-            handle_tokenization(new_record)
-            true
-          end
-        elsif new_record || self.class.dual_write_enabled
-          # For new records with dual_write or existing records with dual_write:
-          # Let ActiveRecord handle the save normally
-
-          # Cache any tokenized fields that were set to nil to ensure proper handling
-          nil_fields = {}
-
-          # Track if we have any field changes that require tokenization
-          needs_secondary_tokenization = false
-
-          self.class.tokenized_fields.each do |field|
-            field_str = field.to_s
-
-            if instance_variable_defined?("@#{field}_set_to_nil") &&
-               instance_variable_get("@#{field}_set_to_nil")
-              nil_fields[field] = true
-            elsif !new_record && changes.key?(field_str)
-              # For existing records with dual_write, if field is changed but not nil,
-              # check if we need tokenization after the main transaction
-              # In dual_write mode, if using the field setter, the token will be updated in the main transaction
-              # So we only need secondary tokenization for direct attribute assignments
-              unless instance_variable_defined?("@original_#{field}")
-                needs_secondary_tokenization = true
-              end
-            end
-          end
-
-          result = super(*args, &block)
-          return false unless result
-
-          # Check if we should skip tokenization (used by find_or_create_by)
-          skip_tokenization = instance_variable_defined?(:@_skip_tokenization_callbacks) &&
-                              instance_variable_get(:@_skip_tokenization_callbacks)
-
-          # Check if the entity_id is already available and tokens were included in the initial insert
-          tokens_already_processed = false
-          if new_record && entity_id_available
-            # Check if token columns are already set
-            tokens_already_processed = self.class.tokenized_fields.all? do |field|
-              field_str = field.to_s
-              token_column = "#{field_str}_token"
-              # Check if token column was set during insert
-              # OR original field is nil (meaning no tokenization needed)
-              token_value = read_attribute(token_column)
-              field_value = read_attribute(field_str)
-              token_value.present? || field_value.nil?
-            end
-          end
-
-          # Only process additional tokenization if needed and not explicitly skipped
-          # and tokens weren't already processed during insert
-          if !skip_tokenization && !tokens_already_processed && (new_record && !entity_id_available || needs_secondary_tokenization)
-            # After save, handle tokenization
-            handle_tokenization(new_record, nil_fields)
-          end
-
-          # Clear the skip flag after use
-          remove_instance_variable(:@_skip_tokenization_callbacks) if instance_variable_defined?(:@_skip_tokenization_callbacks)
-
-          true
-        else
-          # For updates to existing records without dual_write:
-          # We need to optimize how we handle tokenized fields in SQL
-
-          # First check if we're just setting fields to nil, which should be a direct update
-          nil_fields_update = {}
-          has_only_nil_changes = true
-
-          self.class.tokenized_fields.each do |field|
-            field_str = field.to_s
-
-            # Check if this field was set to nil via our setter
-            if instance_variable_defined?("@#{field}_set_to_nil") &&
-               instance_variable_get("@#{field}_set_to_nil")
-              # We can directly update token column to nil
-              token_column = "#{field}_token"
-              nil_fields_update[token_column] = nil
-            # If the field changed to a non-nil value, we need the complex path
-            elsif changes.key?(field_str) && !changes[field_str][1].nil?
-              has_only_nil_changes = false
-              break
-            end
-          end
-
-          # If we're only setting fields to nil, we can do a direct update
-          if has_only_nil_changes && nil_fields_update.any?
-            # Do a standard ActiveRecord save that will include our nil updates
-            result = super(*args, &block)
-            return false unless result
-
-            # Clear the nil flags after saving
-            self.class.tokenized_fields.each do |field|
-              if instance_variable_defined?("@#{field}_set_to_nil")
-                field_decryption_cache[field.to_sym] = nil
-                remove_instance_variable("@#{field}_set_to_nil")
-              end
-            end
-
-            return true
-          end
-
-          # For non-nil changes, we'll use an optimized approach
-          # Store current tokenized values for tokenization
-          tokenized_values = collect_tokenized_values
-
-          # Skip the empty transaction if we only have tokenized field changes
-          only_tokenized_changes = true
-          changes.each_key do |field|
-            unless self.class.tokenized_fields.include?(field.to_sym)
-              only_tokenized_changes = false
-              break
-            end
-          end
-
-          if only_tokenized_changes && tokenized_values.any?
-            # Process tokenization directly without an empty transaction
-            entity_type = self.class.entity_type_proc.call(self)
-            entity_id = self.class.entity_id_proc.call(self)
-
-            if entity_id.present?
-              # Prepare token data for encryption
-              tokens_data = []
-              updates = {}
-
-              tokenized_values.each do |field, value|
-                next if value.nil? || (value.respond_to?(:blank?) && value.blank?)
-
-                field_str = field.to_s
-                pii_type = self.class.pii_types[field_str]
-                next if pii_type.blank?
-
-                tokens_data << {
-                  value: value,
-                  entity_id: entity_id,
-                  entity_type: entity_type,
-                  field_name: field_str,
-                  pii_type: pii_type
-                }
-              end
-
-              # Encrypt in batch if we have data
-              if tokens_data.any?
-                key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-
-                tokens_data.each do |token_data|
-                  field = token_data[:field_name]
-                  key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-                  next unless key_to_token.key?(key)
-
-                  token = key_to_token[key]
-                  token_column = "#{field}_token"
-                  updates[token_column] = token
-
-                  # Important: Clear original field value in database since dual_write is false
-                  # Only needed if the original field isn't already nil
-                  field_value = read_attribute(field.to_s)
-                  unless field_value.nil?
-                    updates[field.to_s] = nil
-                  end
-
-                  # Store in decryption cache
-                  field_decryption_cache[field.to_sym] = token_data[:value]
-                end
-
-                # Direct update without transaction
-                if updates.any?
-                  puts "Applying direct token updates: #{updates.inspect}" if ENV['DEBUG']
-                  self.class.unscoped.where(id: id).update_all(updates)
-
-                  # Update in-memory values
-                  updates.each do |field, value|
-                    write_attribute(field, value)
-                  end
-
-                  # Now also make sure to set original fields to nil in memory
-                  # This ensures consistency between database and memory
-                  tokenized_values.each do |field, _|
-                    write_attribute(field.to_s, nil) unless self.class.dual_write_enabled
-                  end
-
-                  # No need to reload since we've manually updated the attributes
-                  return true
-                end
-              end
-            end
-          end
-
-          # For mixed changes (tokenized + non-tokenized fields),
-          # or when entity_id is not available, use the standard approach
-
-          # Reset changed tokenized fields to their original values
-          reset_tokenized_fields_to_original
-
-          # Let ActiveRecord save non-tokenized fields
-          result = super(*args, &block)
-          return false unless result
-
-          # Now handle tokenization separately
-          handle_tokenization_for_update(tokenized_values)
-          true
-        end
-      end
-
-      # Override save! to use our custom save with exception handling
-      def save!(*args, &block)
-        result = save(*args, &block)
-        raise ActiveRecord::RecordNotSaved.new('Failed to save the record', self) unless result
-
-        result
-      end
-
       # Decrypt a single tokenized field
       def decrypt_field(field)
         field_sym = field.to_sym
@@ -458,12 +140,100 @@ module PiiTokenizer
         field_decryption_cache[field.to_sym]
       end
 
-      # Register this record for lazy decryption when fields are accessed
+      # Register this record for decryption when fields are accessed
       def register_for_decryption
         return if self.class.tokenized_fields.empty? || new_record?
 
         # Clear any cached decrypted values for this record
         clear_decryption_cache
+      end
+
+      # Primary callback method for encrypting PII fields
+      def encrypt_pii_fields
+        # Skip if no tokenized fields or if callbacks are disabled
+        return if self.class.tokenized_fields.empty?
+        return if instance_variable_defined?(:@_skip_tokenization_callbacks) &&
+                  instance_variable_get(:@_skip_tokenization_callbacks)
+
+        # Get entity information
+        entity_type = self.class.entity_type_proc.call(self)
+        entity_id = self.class.entity_id_proc.call(self)
+
+        # For new records without ID, delay tokenization until after save
+        return if entity_id.blank?
+
+        # Early return for persisted records with no changes to tokenized fields
+        if !new_record?
+          # Check if any tokenized fields have changes
+          has_field_changes = self.class.tokenized_fields.any? do |field|
+            field_str = field.to_s
+            changes.key?(field_str) || 
+            instance_variable_defined?("@original_#{field}") ||
+            instance_variable_defined?("@#{field}_set_to_nil")
+          end
+          
+          # Check if all fields already have tokens
+          all_have_tokens = self.class.tokenized_fields.all? do |field|
+            token_column = "#{field}_token"
+            read_attribute(token_column).present?
+          end
+          
+          # If nothing has changed and all tokens exist, skip tokenization completely
+          if !has_field_changes && all_have_tokens
+            return
+          end
+        end
+
+        # Find fields that need tokenization
+        fields_to_process = []
+
+        # Check each field to see if it needs tokenization
+        self.class.tokenized_fields.each do |field|
+          field_str = field.to_s
+          token_column = "#{field}_token"
+          
+          # For existing records, skip fields that already have tokens and haven't been modified
+          if !new_record? && !changes.key?(field_str) && 
+             !instance_variable_defined?("@original_#{field}") && 
+             !instance_variable_defined?("@#{field}_set_to_nil") &&
+             read_attribute(token_column).present?
+            # Field already has a token and hasn't changed
+            next
+          end
+          
+          # Check if the field has been modified
+          field_is_new = new_record?
+          field_in_changes = changes.key?(field_str)
+          field_has_original = instance_variable_defined?("@original_#{field}")
+          field_set_to_nil = instance_variable_defined?("@#{field}_set_to_nil")
+          
+          field_modified = field_is_new || field_in_changes || field_has_original || field_set_to_nil
+          
+          # Only process fields that need tokenization
+          if field_modified
+            # Get the current value (from instance var or attribute)
+            value = if instance_variable_defined?("@original_#{field}")
+                      instance_variable_get("@original_#{field}")
+                    else
+                      read_attribute(field_str)
+                    end
+            
+            # Skip nil values
+            next if value.nil?
+            
+            # Skip blank values
+            next if value.respond_to?(:blank?) && value.blank?
+            
+            # This field needs tokenization
+            fields_to_process << field
+          end
+        end
+        
+        # Skip if no fields need tokenization
+        return if fields_to_process.empty?
+        
+        # Process tokenization for identified fields
+        process_tokenization(fields_to_process)
       end
 
       private
@@ -473,505 +243,175 @@ module PiiTokenizer
         "#{field}_token"
       end
 
-      # Handle the tokenization process after saving
-      def handle_tokenization(new_record, nil_fields = {})
-        return unless persisted?
-
-        # Get entity info
+      # Process tokenization for the specified fields
+      def process_tokenization(fields_to_process = nil)
+        # If no specific fields are provided, use all tokenized fields
+        fields_to_process ||= self.class.tokenized_fields
+        
+        # Convert to array of symbols for consistency
+        fields_to_process = Array(fields_to_process).map(&:to_sym)
+        
+        # Skip if no fields to process
+        return if fields_to_process.empty?
+        
+        # Get entity information
         entity_type = self.class.entity_type_proc.call(self)
         entity_id = self.class.entity_id_proc.call(self)
+        
+        # For new records without ID, delay tokenization until after save
         return if entity_id.blank?
 
-        # Check for associated records that may already have tokens
-        is_associated_record = respond_to?(:association_cache) &&
-                               association_cache.values.any? do |assoc|
-                                 assoc.is_a?(ActiveRecord::Associations::HasManyAssociation) &&
-                                   assoc.owner.persisted? &&
-                                   !assoc.owner.new_record?
-                               end
-
-        # Only check for redundant tokenization for new or associated records that might already have tokens
-        if new_record || is_associated_record
-          tokens_already_processed = self.class.tokenized_fields.all? do |field|
-            field_str = field.to_s
-            token_column = "#{field_str}_token"
-
-            # Skip this check for fields that have changed or have instance variables
-            next false if changes.key?(field_str)
-            next false if instance_variable_defined?("@original_#{field}")
-
-            # If the field has a value that needs tokenization, check if token exists
-            value = instance_variable_defined?("@original_#{field}") ?
-                   instance_variable_get("@original_#{field}") :
-                   read_attribute(field)
-
-            # Field has a token already OR field is nil (no token needed)
-            token_present = read_attribute(token_column).present?
-            field_nil = value.nil?
-
-            token_present || field_nil
-          end
-
-          # If all token columns are already set, we can skip this process
-          if tokens_already_processed
-            puts "Skipping handle_tokenization for #{self.class.name} - tokens already processed in initial insert" if ENV['DEBUG']
-            return
-          end
-        end
-
-        # Determine which fields need tokenization
-        fields_to_tokenize = []
+        # Collect data for tokenization
+        tokens_data = []
         fields_to_clear = []
 
-        # Debug output
-        puts "New record: #{new_record}, Changes: #{changes.inspect}" if ENV['DEBUG']
-
-        if new_record
-          # For new records, tokenize all non-nil fields
-          self.class.tokenized_fields.each do |field|
-            value = instance_variable_defined?("@original_#{field}") ?
-                    instance_variable_get("@original_#{field}") :
-                    read_attribute(field)
-            if value.nil?
-              fields_to_clear << field
-              puts "New record field #{field} is nil, will clear token" if ENV['DEBUG']
-            else
-              fields_to_tokenize << field
-              puts "New record field #{field} has value '#{value}', will tokenize" if ENV['DEBUG']
-            end
-          end
-        else
-          # For updates, check various ways to determine if a field was set to nil
-          self.class.tokenized_fields.each do |field|
-            field_str = field.to_s
-
-            # Skip fields that were already handled in the main transaction
-            if nil_fields && nil_fields[field]
-              puts "Field #{field} already handled in main transaction, skipping" if ENV['DEBUG']
-              next
-            end
-
-            # First check if the field is in the changed attributes
-            if changes.key?(field_str)
-              old_value, new_value = changes[field_str]
-              puts "Field #{field} changed from '#{old_value}' to '#{new_value}'" if ENV['DEBUG']
-
-              if new_value.nil?
-                fields_to_clear << field
-                puts "Field #{field} set to nil in changes, will clear token" if ENV['DEBUG']
-              else
-                fields_to_tokenize << field
-                puts "Field #{field} set to '#{new_value}' in changes, will tokenize" if ENV['DEBUG']
-              end
-            # Check for our explicit nil flag
-            elsif instance_variable_defined?("@#{field}_set_to_nil") && instance_variable_get("@#{field}_set_to_nil")
-              fields_to_clear << field
-              puts "Field #{field} flagged as set to nil, will clear token" if ENV['DEBUG']
-            # If not in changes, check if the instance variable indicates a change
-            elsif instance_variable_defined?("@original_#{field}")
-              value = instance_variable_get("@original_#{field}")
-
-              if value.nil?
-                fields_to_clear << field
-                puts "Field #{field} set to nil via instance variable, will clear token" if ENV['DEBUG']
-              else
-                fields_to_tokenize << field
-                puts "Field #{field} set to '#{value}' via instance variable, will tokenize" if ENV['DEBUG']
-              end
-            end
-          end
-        end
-
-        # Now process tokenization
-        updates = {}
-
-        # Clear token columns for nil fields
-        fields_to_clear.each do |field|
+        fields_to_process.each do |field|
+          field_str = field.to_s
           token_column = "#{field}_token"
-
-          # Skip fields that were explicitly set to nil using our setter
-          # as those are already handled in the main transaction
-          if nil_fields && nil_fields[field]
-            puts "Field #{field} was already handled in main transaction, skipping" if ENV['DEBUG']
-
-            # Just clear our nil flag and make sure cache is updated
-            field_decryption_cache[field.to_sym] = nil
-            remove_instance_variable("@#{field}_set_to_nil") if instance_variable_defined?("@#{field}_set_to_nil")
+          
+          # Skip fields that already have tokens and haven't been explicitly marked for processing
+          if !new_record? && 
+             !changes.key?(field_str) && 
+             !instance_variable_defined?("@original_#{field}") && 
+             !instance_variable_defined?("@#{field}_set_to_nil") &&
+             read_attribute(token_column).present?
             next
           end
-
-          # Skip fields that were explicitly set to nil using our setter
-          # as those are already handled in the main transaction
-          if instance_variable_defined?("@#{field}_set_to_nil") &&
+          
+          # Get the value from memory
+          value = nil
+          
+          # First check if original value is in instance variable
+          if instance_variable_defined?("@original_#{field}")
+            value = instance_variable_get("@original_#{field}")
+          else
+            # Otherwise, use the current value
+            value = read_attribute(field)
+          end
+          
+          # Check if field was explicitly set to nil
+          if instance_variable_defined?("@#{field}_set_to_nil") && 
              instance_variable_get("@#{field}_set_to_nil")
-            puts "Field #{field} was set to nil using setter, token already cleared in main transaction" if ENV['DEBUG']
-
-            # Just clear our nil flag and make sure cache is updated
-            field_decryption_cache[field.to_sym] = nil
-            remove_instance_variable("@#{field}_set_to_nil")
+            fields_to_clear << field
             next
           end
-
-          # If this token column was already cleared in the main update,
-          # we can skip the update to avoid duplicate queries
-          if !new_record && read_attribute(token_column).nil?
-            puts "Token column #{token_column} already nil, skipping update" if ENV['DEBUG']
+          
+          # Special handling for nil values
+          if value.nil?
+            # If field is nil, clear the token
+            fields_to_clear << field
             next
           end
-
-          # Build update hash - always include token column
-          field_updates = { token_column => nil }
-
-          # If dual-write is enabled, also clear the original field
-          if self.class.dual_write_enabled
-            field_updates[field.to_s] = nil
-            puts "Dual write enabled, also setting #{field} to nil" if ENV['DEBUG']
-          end
-
-          # Add to the batch updates
-          updates.merge!(field_updates)
-
-          # Cache the nil value to ensure accessors return nil
-          field_decryption_cache[field.to_sym] = nil
-
-          # Clear our nil flag after using it
-          if instance_variable_defined?("@#{field}_set_to_nil")
-            remove_instance_variable("@#{field}_set_to_nil")
-          end
-        end
-
-        # Tokenize fields that need tokenization
-        unless fields_to_tokenize.empty?
-          tokens_data = []
-
-          fields_to_tokenize.each do |field|
-            # First check if original value is in instance variable
-            value = if instance_variable_defined?("@original_#{field}")
-                      instance_variable_get("@original_#{field}")
-                    else
-                      read_attribute(field)
-                    end
-
-            next if value.nil? || (value.respond_to?(:blank?) && value.blank?)
-
-            pii_type = self.class.pii_types[field.to_s]
-            next if pii_type.blank?
-
-            tokens_data << {
-              value: value,
-              entity_id: entity_id,
-              entity_type: entity_type,
-              field_name: field.to_s,
-              pii_type: pii_type
-            }
-          end
-
-          # Encrypt in batch
-          if tokens_data.any?
-            key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-
-            tokens_data.each do |token_data|
-              field = token_data[:field_name]
-              key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-              next unless key_to_token.key?(key)
-
-              token = key_to_token[key]
-              token_column = "#{field}_token"
-              updates[token_column] = token
-
-              puts "Setting #{token_column} to #{token}" if ENV['DEBUG']
-
-              # Store in decryption cache
-              field_decryption_cache[field.to_sym] = token_data[:value]
-            end
-          end
-        end
-
-        # Apply updates if any
-        if updates.any?
-          puts "Applying updates: #{updates.inspect}" if ENV['DEBUG']
-
-          # Skip callbacks to avoid recursion
-          self.class.unscoped.where(id: id).update_all(updates)
-
-          # Update in-memory attributes
-          updates.each do |field, value|
-            write_attribute(field, value)
-          end
-
-          # Only reload if not in a test context with mocked ID
-          begin
-            puts 'Reloading record after updates' if ENV['DEBUG']
-            reload
-          rescue ActiveRecord::RecordNotFound
-            # Skip reload if record not found (test context)
-            puts 'Record not found, skipping reload' if ENV['DEBUG']
-          end
-        end
-      end
-
-      # Handle tokenization for updates to existing records
-      def handle_tokenization_for_update(tokenized_values)
-        entity_type = self.class.entity_type_proc.call(self)
-        entity_id = self.class.entity_id_proc.call(self)
-        return if entity_id.blank?
-
-        # Skip this method entirely if there are no values to tokenize
-        return if tokenized_values.empty?
-
-        # Only check for redundant tokenization in new records or associated records
-        # For regular updates (when changing values), we always need to update the tokens
-        is_new_or_associated = new_record? ||
-                               (respond_to?(:association_cache) &&
-                                association_cache.values.any? do |assoc|
-                                  assoc.is_a?(ActiveRecord::Associations::HasManyAssociation) &&
-                                                                         assoc.owner.persisted? &&
-                                                                         !assoc.owner.new_record?
-                                end)
-
-        # For associated records only, check if tokens are already processed
-        if is_new_or_associated
-          tokens_already_processed = tokenized_values.keys.all? do |field|
-            field_str = field.to_s
-            token_column = "#{field_str}_token"
-            value = tokenized_values[field]
-
-            # Skip this check for fields that have changed
-            next false if changes.key?(field_str)
-
-            # Field has a token already OR field is nil (no token needed)
-            token_present = read_attribute(token_column).present?
-            field_nil = value.nil?
-
-            token_present || field_nil
-          end
-
-          # If tokens are already processed, skip the update
-          if tokens_already_processed
-            puts "Skipping handle_tokenization_for_update for #{self.class.name} - tokens already processed in initial insert" if ENV['DEBUG']
-            return
-          end
-        end
-
-        updates = {}
-        tokens_data = []
-
-        puts "Changes: #{changes.inspect}, Tokenized values: #{tokenized_values.inspect}" if ENV['DEBUG']
-        puts "Instance variables: #{instance_variables.select { |v| v.to_s.start_with?('@original_') || v.to_s.include?('_set_to_nil') }.inspect}" if ENV['DEBUG']
-
-        # Process fields that were explicitly set to nil or changed
-        self.class.tokenized_fields.each do |field|
-          field_str = field.to_s
-
-          # Check for nil values in changes
-          if changes.key?(field_str) && changes[field_str][1].nil?
-            # Field was set to nil in changes - clear the token column
-            token_column = "#{field_str}_token"
-
-            # If token column is already nil, skip the update
-            if read_attribute(token_column).nil?
-              puts "Token column #{token_column} already nil, skipping update" if ENV['DEBUG']
-              next
-            end
-
-            # Build update hash - always include token column
-            field_updates = { token_column => nil }
-
-            # If dual-write is enabled, also clear the original field
-            if self.class.dual_write_enabled
-              field_updates[field_str] = nil
-              puts "Dual write enabled, also setting #{field} to nil" if ENV['DEBUG']
-            end
-
-            # Add to the batch updates
-            updates.merge!(field_updates)
-
-            # Also cache the nil value
-            field_decryption_cache[field.to_sym] = nil
-          # Check for our explicit nil flag
-          elsif instance_variable_defined?("@#{field}_set_to_nil") && instance_variable_get("@#{field}_set_to_nil")
-            # Field was flagged as set to nil - clear the token column
-            token_column = "#{field_str}_token"
-
-            # Skip the update if we already handled it in the main transaction via our setter
-            puts "Field #{field} was set to nil using setter, token already cleared in main transaction" if ENV['DEBUG']
-
-            # Just update cache and clear the flag
-            field_decryption_cache[field.to_sym] = nil
-            remove_instance_variable("@#{field}_set_to_nil")
-
-            # Skip the update
-            next
-          # Check for nil values in instance variables
-          elsif instance_variable_defined?("@original_#{field}") && instance_variable_get("@original_#{field}").nil?
-            # Field was set to nil via instance variable - clear the token column
-            token_column = "#{field_str}_token"
-
-            # If token column is already nil, skip the update
-            if read_attribute(token_column).nil?
-              puts "Token column #{token_column} already nil, skipping update" if ENV['DEBUG']
-              next
-            end
-
-            # Build update hash - always include token column
-            field_updates = { token_column => nil }
-
-            # If dual-write is enabled, also clear the original field
-            if self.class.dual_write_enabled
-              field_updates[field_str] = nil
-              puts "Dual write enabled, also setting #{field} to nil" if ENV['DEBUG']
-            end
-
-            # Add to the batch updates
-            updates.merge!(field_updates)
-
-            # Also cache the nil value
-            field_decryption_cache[field.to_sym] = nil
-          # Check for non-nil values from tokenized_values
-          elsif tokenized_values.key?(field)
-            # Field was changed - tokenize it
-            value = tokenized_values[field]
-            next if value.nil? || (value.respond_to?(:blank?) && value.blank?)
-
-            pii_type = self.class.pii_types[field_str]
-            next if pii_type.blank?
-
-            tokens_data << {
-              value: value,
-              entity_id: entity_id,
-              entity_type: entity_type,
-              field_name: field_str,
-              pii_type: pii_type
-            }
-
-            puts "Field #{field} changed to '#{value}', will tokenize" if ENV['DEBUG']
-          end
-        end
-
-        # Encrypt in batch
-        if tokens_data.any?
-          key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-
-          tokens_data.each do |token_data|
-            field = token_data[:field_name]
-            key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-            next unless key_to_token.key?(key)
-
-            token = key_to_token[key]
-            token_column = "#{field}_token"
-            updates[token_column] = token
-            puts "Setting #{token_column} to #{token}" if ENV['DEBUG']
-
-            # Store in decryption cache
-            field_decryption_cache[field.to_sym] = token_data[:value]
-          end
-        end
-
-        # Apply updates if any
-        if updates.any?
-          puts "Applying updates: #{updates.inspect}" if ENV['DEBUG']
-
-          # Update database directly to skip callbacks
-          self.class.unscoped.where(id: id).update_all(updates)
-
-          # Update in-memory token values
-          updates.each do |field, value|
-            write_attribute(field, value)
-          end
-
-          # Restore in-memory attributes to match what we want
-          tokenized_values.each do |field, value|
-            write_attribute(field.to_s, value)
-          end
-
-          # Reload to ensure consistency
-          begin
-            puts 'Reloading record after updates' if ENV['DEBUG']
-            reload
-          rescue ActiveRecord::RecordNotFound
-            # Skip reload if record not found (test context)
-            puts 'Record not found, skipping reload' if ENV['DEBUG']
-          end
-        end
-      end
-
-      # Collect current values of tokenized fields
-      def collect_tokenized_values
-        values = {}
-
-        self.class.tokenized_fields.each do |field|
-          field_str = field.to_s
-
-          # Only collect values that have changed
-          if changes.key?(field_str)
-            values[field] = read_attribute(field_str)
-          end
-        end
-
-        values
-      end
-
-      # Reset tokenized fields to their original values to prevent ActiveRecord from including them in SQL
-      def reset_tokenized_fields_to_original
-        self.class.tokenized_fields.each do |field|
-          field_str = field.to_s
-
-          next unless changes.key?(field_str)
-
-          original_value = changes[field_str].first
-          write_attribute(field_str, original_value)
-          # Clear the change tracking
-          changes_applied if respond_to?(:changes_applied)
-        end
-      end
-
-      # For test compatibility - collect data for tokenization
-      def collect_tokens_data(entity_type, entity_id)
-        tokens_data = []
-        fields_set_to_nil = []
-
-        # Gather data for each tokenized field
-        self.class.tokenized_fields.each do |field|
-          # For new records, we want to always process the fields even if they haven't changed
-          # For existing records, skip if the field value hasn't changed
-          next unless new_record? || changes.key?(field.to_s)
-
-          # Get the value to encrypt (try instance var first, then attribute)
-          value = instance_variable_defined?("@original_#{field}") ?
-                  instance_variable_get("@original_#{field}") :
-                  read_attribute(field)
-
-          # Check if the field was explicitly set to nil
-          field_explicitly_set_to_nil = changes.key?(field.to_s) && changes[field.to_s][1].nil?
-
-          if field_explicitly_set_to_nil
-            fields_set_to_nil << field.to_s
-            next
-          end
-
-          # Skip nil values for tokenization
-          next if value.nil?
-          # Skip empty values
+          
+          # Skip blank values
           next if value.respond_to?(:blank?) && value.blank?
-
-          # Get the PII type for this field
-          pii_type = self.class.pii_types[field.to_s]
+          
+          # Get PII type for this field
+          pii_type = self.class.pii_types[field_str]
           next if pii_type.blank?
-
-          # Prepare data for encryption
+          
+          # Add to tokenization batch
           tokens_data << {
             value: value,
             entity_id: entity_id,
             entity_type: entity_type,
-            field_name: field.to_s,
+            field_name: field_str,
             pii_type: pii_type
           }
         end
-
-        # Return both regular tokens data and fields set to nil
-        [tokens_data, fields_set_to_nil]
+        
+        # Handle fields to clear
+        fields_to_clear.each do |field|
+          token_column = "#{field}_token"
+          write_attribute(token_column, nil)
+          
+          # If dual-write is enabled, also clear the original field
+          if self.class.dual_write_enabled
+            write_attribute(field.to_s, nil)
+          end
+          
+          # Cache the nil value
+          field_decryption_cache[field.to_sym] = nil
+        end
+        
+        # Skip if no data to encrypt
+        return if tokens_data.empty?
+        
+        # Encrypt in batch
+        key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
+        
+        # Update model with encrypted values
+        tokens_data.each do |token_data|
+          field = token_data[:field_name]
+          key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
+          
+          next unless key_to_token.key?(key)
+          
+          token = key_to_token[key]
+          token_column = "#{field}_token"
+          
+          # Write token to token column
+          write_attribute(token_column, token)
+          
+          # Clear original field if not dual-writing
+          write_attribute(field, nil) unless self.class.dual_write_enabled
+          
+          # Cache decrypted value
+          field_decryption_cache[field.to_sym] = token_data[:value]
+        end
+      end
+      
+      # Process tokenization after saving a new record
+      def process_after_save_tokenization
+        return unless persisted?
+        return if self.class.tokenized_fields.empty?
+        
+        # Get entity info
+        entity_type = self.class.entity_type_proc.call(self)
+        entity_id = self.class.entity_id_proc.call(self)
+        return if entity_id.blank?
+        
+        # Only process after_save for new records 
+        return unless respond_to?(:previous_changes) && previous_changes.key?('id')
+        
+        # Check for tokenized fields that still need processing
+        needs_tokenization = self.class.tokenized_fields.any? do |field|
+          field_str = field.to_s
+          token_column = "#{field_str}_token"
+          
+          # Check if field needs tokenization
+          value = instance_variable_defined?("@original_#{field}") ? 
+                 instance_variable_get("@original_#{field}") : 
+                 read_attribute(field)
+                 
+          # Field needs tokenization if it has a value and no token
+          value.present? && read_attribute(token_column).blank?
+        end
+        
+        return unless needs_tokenization
+        
+        # Process tokenization
+        process_tokenization
+        
+        # Update the database directly to bypass callbacks
+        updates = {}
+        
+        self.class.tokenized_fields.each do |field|
+          field_str = field.to_s
+          token_column = "#{field_str}_token"
+          token_value = read_attribute(token_column)
+          
+          # Only include fields that have tokens
+          next if token_value.blank?
+          
+          updates[token_column] = token_value
+          updates[field_str] = nil unless self.class.dual_write_enabled
+        end
+        
+        # Apply updates if any
+        if updates.any?
+          self.class.unscoped.where(id: id).update_all(updates)
+        end
       end
     end
 
@@ -1041,7 +481,7 @@ module PiiTokenizer
               if self.class.dual_write_enabled
                 # In dual_write mode, we want to update both columns in one transaction
                 write_attribute(field, nil) # Explicitly write nil to the original field
-                send(:attribute_will_change!, field.to_s)
+                send(:attribute_will_change!, field.to_s) if respond_to?(:attribute_will_change!)
 
                 # Set the attribute to nil via super
                 super(nil)
@@ -1054,7 +494,7 @@ module PiiTokenizer
               end
 
               # Always mark the token column for update
-              send(:attribute_will_change!, token_column)
+              send(:attribute_will_change!, token_column) if respond_to?(:attribute_will_change!)
 
               # Set the token column to nil immediately in memory
               # This ensures it will be part of the main transaction
@@ -1251,101 +691,14 @@ module PiiTokenizer
       extend ActiveSupport::Concern
 
       class_methods do
-        # Override find_or_initialize_by to handle tokenized fields
-        def find_or_initialize_by(attributes)
-          # First try to find the record
-          record = find_record_by_attributes(attributes)
-
-          # If found, return it
-          return record if record
-
-          # If not found, initialize a new one with the attributes
-          record = new(attributes)
-
-          # Make sure we set instance variables for tokenized fields
-          attributes.each do |key, value|
-            key_sym = key.to_sym
-            if tokenized_fields.include?(key_sym)
-              record.instance_variable_set("@original_#{key}", value)
-            end
-          end
-
-          record
-        end
-
-        # Override find_or_create_by to handle tokenized fields
+        # Method to find by tokenized fields or create
         def find_or_create_by(attributes)
-          # First try to find the record
-          record = find_record_by_attributes(attributes)
-
-          # If found, return it
-          return record if record
-
-          # If not found, create a new one with the attributes
-          transaction(requires_new: true) do
-            # Create a new instance with attributes but don't save yet
-            record = new(attributes)
-
-            # Save to get an ID and trigger tokenization
-            result = record.save
-
-            # Run any validation block if provided
-            yield(record) if block_given?
-
-            unless result
-              # If save fails, return the record with errors
-              raise ActiveRecord::Rollback
-            end
-          end
-
-          record
+          find_by(attributes) || create(attributes)
         end
 
-        private
-
-        # Find a record matching the given attributes
-        def find_record_by_attributes(attributes)
-          if read_from_token_column
-            # Process tokenized fields for searching
-            tokenized_attrs = {}
-            standard_attrs = {}
-
-            attributes.each do |key, value|
-              key_sym = key.to_sym
-              if tokenized_fields.include?(key_sym) && value.present?
-                # Use token column for search
-                tokens = PiiTokenizer.encryption_service.search_tokens(value)
-                if tokens.empty?
-                  # Return nil if no matching tokens
-                  return nil
-                end
-
-                token_column = "#{key_sym}_token"
-                tokenized_attrs[token_column] = tokens
-              else
-                standard_attrs[key] = value
-              end
-            end
-
-            # First find by tokenized fields if any
-            if tokenized_attrs.any?
-              # Directly search using the token column
-              token_column = tokenized_attrs.keys.first
-              tokens = tokenized_attrs.values.first
-              record = where(token_column => tokens).first
-              return record if record
-            else
-              # Just use standard where method if no tokenized fields
-              record = where(attributes).first
-              return record if record
-            end
-          else
-            # Just use standard where method if not reading from token columns
-            record = where(attributes).first
-            return record if record
-          end
-
-          nil
+        # Method to find by tokenized fields or initialize
+        def find_or_initialize_by(attributes)
+          find_by(attributes) || new(attributes)
         end
       end
     end
@@ -1375,132 +728,21 @@ module PiiTokenizer
       include BatchOperations
       include FindOrCreateMethods
 
-      # Set up callbacks - intentionally minimal
-      before_save :encrypt_pii_fields
-
-      # Define encrypt_pii_fields method
-      define_method(:encrypt_pii_fields) do
-        # Skip if no tokenized fields or if callbacks are disabled
-        return if self.class.tokenized_fields.empty?
-        return if instance_variable_defined?(:@_skip_tokenization_callbacks) &&
-                  instance_variable_get(:@_skip_tokenization_callbacks)
-
-        # Get entity information
-        entity_type = self.class.entity_type_proc.call(self)
-        entity_id = self.class.entity_id_proc.call(self)
-
-        # For new records without ID, delay tokenization until after save
-        return if entity_id.blank?
-
-        # Check if tokenization has already been processed for this record
-        # For new records, check if token columns already have values
-        if new_record?
-          tokens_already_processed = self.class.tokenized_fields.all? do |field|
-            field_str = field.to_s
-            token_column = "#{field_str}_token"
-            # Check if token column already has a value OR the field is nil
-            token_present = read_attribute(token_column).present?
-            field_nil = read_attribute(field_str).nil?
-
-            # If we have a token or field is nil (no need for token), consider it processed
-            token_present || field_nil
-          end
-
-          # Skip further processing if all tokens are already set
-          if tokens_already_processed
-            puts "Skipping encrypt_pii_fields for #{self.class.name} - tokens already processed in initial insert" if ENV['DEBUG']
-            return
-          end
-        end
-
-        # Get fields that need tokenization
-        tokens_data = []
-        fields_set_to_nil = []
-
-        self.class.tokenized_fields.each do |field|
-          field_str = field.to_s
-
-          # Check for force token update flag
-          force_update = instance_variable_defined?("@force_token_update_for_#{field}") &&
-                         instance_variable_get("@force_token_update_for_#{field}")
-
-          # Only process fields that have changed or need forced update
-          next unless new_record? || changes.key?(field_str) || force_update
-
-          value = read_attribute(field)
-
-          # Handle nil values
-          if value.nil?
-            fields_set_to_nil << field_str
-            next
-          end
-
-          # Skip blank values
-          next if value.respond_to?(:blank?) && value.blank?
-
-          # Get PII type
-          pii_type = self.class.pii_types[field_str]
-          next if pii_type.blank?
-
-          # Add to tokenization batch
-          tokens_data << {
-            value: value,
-            entity_id: entity_id,
-            entity_type: entity_type,
-            field_name: field_str,
-            pii_type: pii_type
-          }
-        end
-
-        # Handle fields set to nil
-        fields_set_to_nil.each do |field|
-          token_column = "#{field}_token"
-
-          # Clear the force update flag if it exists
-          if instance_variable_defined?("@force_token_update_for_#{field}")
-            remove_instance_variable("@force_token_update_for_#{field}")
-          end
-
-          # For in-memory handling, always update the token column
-          write_attribute(token_column, nil)
-
-          # If dual-write is enabled, ensure original field remains nil
-          # This will be included in the main ActiveRecord UPDATE
-          if self.class.dual_write_enabled
-            write_attribute(field, nil)
-          end
-        end
-
-        # Skip if no data to encrypt
-        return if tokens_data.empty?
-
-        # Perform batch encryption
-        key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-
-        # Update model with encrypted values
-        tokens_data.each do |token_data|
-          field = token_data[:field_name]
-          key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-          next unless key_to_token.key?(key)
-
-          token = key_to_token[key]
-          token_column = "#{field}_token"
-
-          # Write token to token column
-          write_attribute(token_column, token)
-
-          # Clear original field if not dual-writing
-          write_attribute(field, nil) unless self.class.dual_write_enabled
-
-          # Cache decrypted value
-          field_decryption_cache[field.to_sym] = token_data[:value]
-        end
+      # Set up callbacks if the class supports them
+      before_save :encrypt_pii_fields if respond_to?(:before_save)
+      
+      # Use respond_to? to check if callbacks are supported by the class
+      if respond_to?(:after_save)
+        after_save :process_after_save_tokenization
       end
-
-      # Add callback
-      after_find :register_for_decryption
-      after_initialize :register_for_decryption
+      
+      if respond_to?(:after_find)
+        after_find :register_for_decryption
+      end
+      
+      if respond_to?(:after_initialize)
+        after_initialize :register_for_decryption
+      end
     end
 
     # Class methods for configuration

@@ -24,19 +24,13 @@ end
 
 require 'pii_tokenizer'
 require 'active_record'
-begin
-  require 'pry'
-rescue LoadError
-  # Pry is optional for testing
-end
+require 'webmock/rspec' # Load WebMock explicitly for all tests
 
-begin
-  require 'webmock/rspec'
-  # Configure webmock to allow localhost connections for testing with a local encryption service
-  WebMock.disable_net_connect!(allow_localhost: true)
-rescue LoadError
-  # Webmock is optional for testing
-end
+# Create support directory if it doesn't exist
+FileUtils.mkdir_p('spec/support') unless File.directory?('spec/support')
+
+# Load all support files
+Dir['./spec/support/**/*.rb'].sort.each { |file| require file }
 
 # Add a test implementation of callback methods
 module CallbackMethods
@@ -104,6 +98,11 @@ RSpec.configure do |config|
       config.log_level = Logger::FATAL
     end
   end
+  
+  # Include shared contexts for all tests tagged with appropriate metadata
+  config.include_context "with encryption service", :use_encryption_service
+  config.include_context "with tokenizable models", :use_tokenizable_models
+  config.include_context "with http mocks", :use_http_mocks
 end
 
 # Create test tables
