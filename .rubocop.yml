@@ -1,0 +1,106 @@
+require:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 2.4
+  Exclude:
+    - 'bin/**/*'
+    - 'tmp/**/*'
+    - 'vendor/**/*'
+    - 'spec/support/**/*'
+    - 'spec/rails4_compatibility_spec.rb'
+    - 'spec/rails5_compatibility_spec.rb'
+
+# New cops that need to be explicitly configured
+Lint/RaiseException:
+  Enabled: true
+
+Lint/StructNewOverride:
+  Enabled: true
+
+Style/HashEachMethods:
+  Enabled: true
+
+Style/HashTransformKeys:
+  Enabled: true
+
+Style/HashTransformValues:
+  Enabled: true
+
+# Style configurations
+Style/Documentation:
+  Enabled: false
+
+Style/FrozenStringLiteralComment:
+  Enabled: false
+
+Style/GuardClause:
+  Enabled: false
+
+Style/IfUnlessModifier:
+  Enabled: false
+
+Style/MultilineIfModifier:
+  Enabled: false
+
+Style/WordArray:
+  Enabled: false
+
+# RSpec configurations
+RSpec/ExampleLength:
+  Max: 35
+
+RSpec/MultipleExpectations:
+  Max: 5
+
+RSpec/NestedGroups:
+  Max: 4
+
+RSpec/MessageSpies:
+  EnforcedStyle: receive
+
+RSpec/ExpectChange:
+  EnforcedStyle: block
+
+RSpec/DescribeClass:
+  Enabled: false
+
+RSpec/FilePath:
+  Enabled: false
+
+# Layout configurations
+Layout/LineLength:
+  Max: 120
+  Exclude:
+    - 'spec/**/*'
+
+# Metrics configurations
+Metrics/BlockLength:
+  Max: 30
+  Exclude:
+    - 'spec/**/*'
+    - '*.gemspec'
+
+Metrics/MethodLength:
+  Max: 30
+
+Metrics/AbcSize:
+  Max: 35
+
+Metrics/CyclomaticComplexity:
+  Max: 10
+
+Metrics/PerceivedComplexity:
+  Max: 10
+
+Metrics/ModuleLength:
+  Max: 200
+
+# Lint configurations
+Lint/AmbiguousBlockAssociation:
+  Exclude:
+    - 'spec/**/*'
+
+Lint/ShadowingOuterLocalVariable:
+  Exclude:
+    - 'spec/**/*' 
