@@ -27,29 +27,17 @@ module PiiTokenizer
         return nil unless self.class.tokenized_fields.include?(field_sym)
 
         # If this field is flagged to be set to nil, return nil without decrypting
-        if instance_variable_defined?("@#{field}_set_to_nil") &&
-           instance_variable_get("@#{field}_set_to_nil")
-          return nil
-        end
+        return nil if field_set_to_nil?(field_sym)
 
         # Check cache first
-        if field_decryption_cache.key?(field_sym)
-          return field_decryption_cache[field_sym]
-        end
+        return field_decryption_cache[field_sym] if field_decryption_cache.key?(field_sym)
 
         # Get the encrypted value
-        token_column = "#{field}_token"
-        encrypted_value = self.class.read_from_token_column ?
-                          read_attribute(token_column) :
-                          read_attribute(field)
-
-        # Try original field if token column is empty/nil
-        if encrypted_value.nil? || encrypted_value.empty?
-          encrypted_value = read_attribute(field)
-        end
+        token_column = token_column_for(field)
+        encrypted_value = get_encrypted_value(field_sym, token_column)
 
         # Return nil for nil/blank values
-        return nil if encrypted_value.nil? || encrypted_value.empty?
+        return nil if encrypted_value.blank?
 
         # Decrypt the value
         result = PiiTokenizer.encryption_service.decrypt_batch([encrypted_value])
@@ -72,15 +60,10 @@ module PiiTokenizer
         encrypted_values = []
 
         fields_to_decrypt.each do |field|
-          token_column = "#{field}_token"
+          token_column = token_column_for(field)
 
           # Get the encrypted value
-          encrypted_value = if self.class.read_from_token_column && respond_to?(token_column) && self[token_column].present?
-                              self[token_column]
-                            else
-                              read_attribute(field)
-                            end
-
+          encrypted_value = get_encrypted_value(field, token_column)
           next if encrypted_value.blank?
 
           field_to_encrypted[field] = encrypted_value
@@ -152,8 +135,8 @@ module PiiTokenizer
       def encrypt_pii_fields
         # Skip if no tokenized fields or if callbacks are disabled
         return if self.class.tokenized_fields.empty?
-        return if instance_variable_defined?(:@_skip_tokenization_callbacks) &&
-                  instance_variable_get(:@_skip_tokenization_callbacks)  
+        return if skip_tokenization_callbacks?
+        
         # Get entity information
         entity_type = self.class.entity_type_proc.call(self)
         entity_id = self.class.entity_id_proc.call(self)
@@ -164,18 +147,10 @@ module PiiTokenizer
         # Early return for persisted records with no changes to tokenized fields
         if !new_record?
           # Check if any tokenized fields have changes
-          has_field_changes = self.class.tokenized_fields.any? do |field|
-            field_str = field.to_s
-            changes.key?(field_str) || 
-            instance_variable_defined?("@original_#{field}") ||
-            instance_variable_defined?("@#{field}_set_to_nil")
-          end
+          has_field_changes = has_tokenized_field_changes?
           
           # Check if all fields already have tokens
-          all_have_tokens = self.class.tokenized_fields.all? do |field|
-            token_column = "#{field}_token"
-            read_attribute(token_column).present?
-          end
+          all_have_tokens = all_fields_have_tokens?
           
           # If nothing has changed and all tokens exist, skip tokenization completely
           if !has_field_changes && all_have_tokens
@@ -184,17 +159,68 @@ module PiiTokenizer
         end
 
         # Find fields that need tokenization
-        fields_to_process = []
+        fields_to_process = fields_needing_tokenization
 
-        # Check each field to see if it needs tokenization
+        # Skip if no fields need tokenization
+        return if fields_to_process.empty?
+        
+        # Process tokenization for identified fields
+        process_tokenization(fields_to_process)
+      end
+
+      private
+      
+      # Check if tokenization callbacks should be skipped
+      def skip_tokenization_callbacks?
+        instance_variable_defined?(:@_skip_tokenization_callbacks) &&
+        instance_variable_get(:@_skip_tokenization_callbacks)
+      end
+      
+      # Check if a field is flagged to be set to nil
+      def field_set_to_nil?(field)
+        field_var = "@#{field}_set_to_nil"
+        instance_variable_defined?(field_var) && instance_variable_get(field_var)
+      end
+      
+      # Check if any tokenized fields have changes
+      def has_tokenized_field_changes?
+        self.class.tokenized_fields.any? do |field|
+          field_str = field.to_s
+          changes.key?(field_str) || 
+          instance_variable_defined?("@original_#{field}") ||
+          field_set_to_nil?(field)
+        end
+      end
+      
+      # Check if all tokenized fields have token values
+      def all_fields_have_tokens?
+        self.class.tokenized_fields.all? do |field|
+          token_column = token_column_for(field)
+          read_attribute(token_column).present?
+        end
+      end
+      
+      # Get the encrypted value for a field
+      def get_encrypted_value(field, token_column)
+        if self.class.read_from_token_column && respond_to?(token_column) && self[token_column].present?
+          self[token_column]
+        else
+          read_attribute(field)
+        end
+      end
+      
+      # Determine which fields need tokenization
+      def fields_needing_tokenization
+        fields_to_process = []
+        
         self.class.tokenized_fields.each do |field|
           field_str = field.to_s
-          token_column = "#{field}_token"
+          token_column = token_column_for(field)
           
           # For existing records, skip fields that already have tokens and haven't been modified
           if !new_record? && !changes.key?(field_str) && 
              !instance_variable_defined?("@original_#{field}") && 
-             !instance_variable_defined?("@#{field}_set_to_nil") &&
+             !field_set_to_nil?(field) &&
              read_attribute(token_column).present?
             # Field already has a token and hasn't changed
             next
@@ -204,7 +230,7 @@ module PiiTokenizer
           field_is_new = new_record?
           field_in_changes = changes.key?(field_str)
           field_has_original = instance_variable_defined?("@original_#{field}")
-          field_set_to_nil = instance_variable_defined?("@#{field}_set_to_nil")
+          field_set_to_nil = field_set_to_nil?(field)
           
           field_modified = field_is_new || field_in_changes || field_has_original || field_set_to_nil
           
@@ -217,27 +243,16 @@ module PiiTokenizer
                       read_attribute(field_str)
                     end
             
-            # Handle nil values by adding to fields_to_process for proper nullification
-            if value.nil? || (value.respond_to?(:blank?) && value.blank?)
-              fields_to_process << field
-              next
-            end
-            
-            # This field needs tokenization
+            # Add field to be processed regardless of value
+            # (nil handling happens in process_tokenization)
             fields_to_process << field
           end
         end
         
-        # Skip if no fields need tokenization
-        return if fields_to_process.empty?
-        
-        # Process tokenization for identified fields
-        process_tokenization(fields_to_process)
+        fields_to_process
       end
 
-      private
-
-      # Compatibility method
+      # Get token column name for a field
       def token_column_for(field)
         "#{field}_token"
       end
@@ -266,31 +281,22 @@ module PiiTokenizer
 
         fields_to_process.each do |field|
           field_str = field.to_s
-          token_column = "#{field}_token"
+          token_column = token_column_for(field)
           
           # Skip fields that already have tokens and haven't been explicitly marked for processing
           if !new_record? && 
              !changes.key?(field_str) && 
              !instance_variable_defined?("@original_#{field}") && 
-             !instance_variable_defined?("@#{field}_set_to_nil") &&
+             !field_set_to_nil?(field) &&
              read_attribute(token_column).present?
             next
           end
           
           # Get the value from memory
-          value = nil
-          
-          # First check if original value is in instance variable
-          if instance_variable_defined?("@original_#{field}")
-            value = instance_variable_get("@original_#{field}")
-          else
-            # Otherwise, use the current value
-            value = read_attribute(field)
-          end
+          value = get_field_value(field)
           
           # Check if field was explicitly set to nil
-          if instance_variable_defined?("@#{field}_set_to_nil") && 
-             instance_variable_get("@#{field}_set_to_nil")
+          if field_set_to_nil?(field)
             fields_to_clear << field
             next
           end
@@ -320,19 +326,7 @@ module PiiTokenizer
         end
         
         # Handle fields to clear
-        fields_to_clear.each do |field|
-          token_column = "#{field}_token"
-          write_attribute(token_column, nil)
-          
-          # If dual-write is enabled, also clear the original field 
-          # (though it might already be nil from setter)
-          if self.class.dual_write_enabled
-            write_attribute(field.to_s, nil)
-          end
-          
-          # Cache the nil value
-          field_decryption_cache[field.to_sym] = nil
-        end
+        clear_token_fields(fields_to_clear)
         
         # Skip if no data to encrypt
         return if tokens_data.empty?
@@ -341,6 +335,36 @@ module PiiTokenizer
         key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
         
         # Update model with encrypted values
+        update_model_with_tokens(tokens_data, key_to_token)
+      end
+      
+      # Get value for a field from instance variable or attribute
+      def get_field_value(field)
+        if instance_variable_defined?("@original_#{field}")
+          instance_variable_get("@original_#{field}")
+        else
+          read_attribute(field.to_s)
+        end
+      end
+      
+      # Clear token fields when value is nil
+      def clear_token_fields(fields_to_clear)
+        fields_to_clear.each do |field|
+          token_column = token_column_for(field)
+          write_attribute(token_column, nil)
+          
+          # If dual-write is enabled, also clear the original field 
+          if self.class.dual_write_enabled
+            write_attribute(field.to_s, nil)
+          end
+          
+          # Cache the nil value
+          field_decryption_cache[field.to_sym] = nil
+        end
+      end
+      
+      # Update model attributes with token values
+      def update_model_with_tokens(tokens_data, key_to_token)
         tokens_data.each do |token_data|
           field = token_data[:field_name]
           key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
@@ -348,7 +372,7 @@ module PiiTokenizer
           next unless key_to_token.key?(key)
           
           token = key_to_token[key]
-          token_column = "#{field}_token"
+          token_column = token_column_for(field)
           
           # Write token to token column
           write_attribute(token_column, token)
@@ -365,7 +389,7 @@ module PiiTokenizer
           field_decryption_cache[field.to_sym] = token_data[:value]
         end
       end
-      
+
       # Process tokenization after saving a new record
       def process_after_save_tokenization
         return unless persisted?
@@ -377,7 +401,7 @@ module PiiTokenizer
         
         # Skip if entity_id is still blank after save (unlikely but possible)
         return if entity_id.blank?
-        
+
         # Only process after_save for new records 
         return unless respond_to?(:previous_changes) && previous_changes.key?('id')
         
@@ -387,9 +411,7 @@ module PiiTokenizer
           token_column = "#{field_str}_token"
           
           # Check if field needs tokenization
-          value = instance_variable_defined?("@original_#{field}") ? 
-                 instance_variable_get("@original_#{field}") : 
-                 read_attribute(field)
+          value = get_field_value(field)
                  
           # Field needs tokenization if it has a value and no token
           value.present? && read_attribute(token_column).blank?
@@ -399,28 +421,17 @@ module PiiTokenizer
         
         # Collect data for tokenization
         tokens_data = []
-        fields_to_clear = []
 
         self.class.tokenized_fields.each do |field|
           field_str = field.to_s
-          token_column = "#{field}_token"
+          token_column = "#{field_str}_token"
           
           # Skip fields that already have tokens
           next if read_attribute(token_column).present?
           
-          # Get the value from memory
-          value = nil
-          
-          # First check if original value is in instance variable
-          if instance_variable_defined?("@original_#{field}")
-            value = instance_variable_get("@original_#{field}")
-          else
-            # Otherwise, use the current value
-            value = read_attribute(field)
-          end
-          
-          # Skip nil or blank values
-          next if value.nil? || (value.respond_to?(:blank?) && value.blank?)
+          # Get value and skip if blank
+          value = get_field_value(field)
+          next if value.blank?
           
           # Get PII type for this field
           pii_type = self.class.pii_types[field_str]
@@ -438,11 +449,16 @@ module PiiTokenizer
         
         # Skip if no data to encrypt
         return if tokens_data.empty?
-        
+
         # Encrypt in batch
         key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
         
-        # Update model with encrypted values
+        # Update model with encrypted values and prepare database updates
+        update_after_save(tokens_data, key_to_token)
+      end
+      
+      # Update the database with tokens after save
+      def update_after_save(tokens_data, key_to_token)
         updates = {}
         
         tokens_data.each do |token_data|
@@ -501,8 +517,7 @@ module PiiTokenizer
         def define_field_reader(field)
           define_method(field) do
             # If the field is flagged to be set to nil, return nil without decrypting
-            if instance_variable_defined?("@#{field}_set_to_nil") &&
-               instance_variable_get("@#{field}_set_to_nil")
+            if field_set_to_nil?(field)
               return nil
             end
 
@@ -518,7 +533,7 @@ module PiiTokenizer
 
             # If we should read from token column, decrypt
             if self.class.read_from_token_column
-              token_column = "#{field}_token"
+              token_column = token_column_for(field)
               if respond_to?(token_column) && read_attribute(token_column).present?
                 return decrypt_field(field)
               end
@@ -529,7 +544,7 @@ module PiiTokenizer
             
             # If we don't have a plaintext value but we have a token, try to decrypt it
             if value.nil? && !self.class.read_from_token_column
-              token_column = "#{field}_token"
+              token_column = token_column_for(field)
               if respond_to?(token_column) && read_attribute(token_column).present?
                 return decrypt_field(field)
               end
@@ -548,7 +563,7 @@ module PiiTokenizer
               instance_variable_set("@#{field}_set_to_nil", true)
 
               # Force this field to be marked as changed
-              token_column = "#{field}_token"
+              token_column = token_column_for(field)
 
               # Mark columns as changed so ActiveRecord includes them in the UPDATE
               # Only mark the token column for change in dual_write=false mode
