@@ -163,6 +163,95 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
       expect(user.email_token).to eq("token_for_john.doe@example.com")
     end
 
+    it 'encrypts PII fields in after_save if entity_id is only available after save' do
+      # Create a user without an ID
+      user = User.new(
+        first_name: 'Jane',
+        last_name: 'Smith',
+        email: 'jane.smith@example.com'
+      )
+      
+      # Setup common test stubs
+      allow(user).to receive(:field_decryption_cache).and_return({})
+      
+      # Force entity_id to be nil initially
+      allow(user).to receive(:entity_id).and_return(nil)
+      
+      # Mock encryption service to return nil tokens when entity_id is nil
+      allow(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+        # First phase - should not generate any tokens when entity_id is nil
+        if user.entity_id.nil?
+          {}
+        else
+          # Second phase - generate tokens after entity_id is available
+          result = {}
+          tokens_data.each do |data|
+            key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:value]}"
+            result[key] = "token_for_#{data[:value]}"
+          end
+          result
+        end
+      end
+      
+      # Track what gets written to attributes
+      written_attributes = {}
+      allow(user).to receive(:write_attribute) do |attr, value|
+        written_attributes[attr.to_s] = value
+      end
+      
+      # Allow reading attributes with current values
+      allow(user).to receive(:read_attribute) do |attr|
+        # For token fields, return what was written or nil
+        if attr.to_s.end_with?('_token')
+          written_attributes[attr.to_s]
+        else
+          # For original fields, return the initial values
+          case attr.to_s
+          when 'first_name' then 'Jane'
+          when 'last_name' then 'Smith' 
+          when 'email' then 'jane.smith@example.com'
+          else nil
+          end
+        end
+      end
+            
+      # Verify no encryption happens with a nil entity_id
+      user.send(:encrypt_pii_fields)
+      
+      # Verify no tokens were written yet because entity_id was nil
+      expect(written_attributes['first_name_token']).to be_nil
+      expect(written_attributes['last_name_token']).to be_nil
+      expect(written_attributes['email_token']).to be_nil
+      
+      # Now simulate what happens after the save
+      
+      # Make ID and entity_id available now (simulating a saved record)
+      allow(user).to receive(:id).and_return(999)
+      allow(user).to receive(:entity_id).and_return('999')
+      allow(user).to receive(:persisted?).and_return(true)
+      
+      # Mock the previous_changes hash to simulate a just-saved record
+      allow(user).to receive(:previous_changes).and_return({'id' => [nil, 999]})
+      
+      # Mock unscoped/where/update_all chain 
+      allow(User).to receive(:unscoped).and_return(User)
+      allow(User).to receive(:where).and_return(User)
+      allow(User).to receive(:update_all) do |updates|
+        updates.each do |key, value|
+          written_attributes[key.to_s] = value
+        end
+        true
+      end
+      
+      # Call the after_save method directly
+      user.send(:process_after_save_tokenization)
+      
+      # Verify tokenization results
+      expect(written_attributes['first_name_token']).to eq('token_for_Jane')
+      expect(written_attributes['last_name_token']).to eq('token_for_Smith') 
+      expect(written_attributes['email_token']).to eq('token_for_jane.smith@example.com')
+    end
+
     it 'properly handles setting tokenized fields to nil' do
       # Create a persisted user with tokens
       user = create_persisted_user_with_tokens
@@ -402,6 +491,72 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
         # Should use the original column value
         expect(user.first_name).to eq('Original John')
       end
+    end
+
+    it 'encrypts PII fields in after_save callback for new records' do
+      # Create a user with an ID (simulating a just-saved record)
+      user = User.new(
+        id: 999,
+        first_name: 'Jane', 
+        last_name: 'Smith',
+        email: 'jane.smith@example.com'
+      )
+      
+      # Set up the necessary mocks
+      allow(user).to receive(:persisted?).and_return(true)
+      allow(user).to receive(:previous_changes).and_return({'id' => [nil, 999]})
+      allow(user).to receive(:entity_type).and_return('user_uuid')
+      allow(user).to receive(:entity_id).and_return('999')
+      
+      # Set up attributes access
+      allow(user).to receive(:read_attribute) do |attr|
+        case attr.to_sym
+        when :first_name then 'Jane'
+        when :last_name then 'Smith'
+        when :email then 'jane.smith@example.com'
+        when :first_name_token then nil
+        when :last_name_token then nil
+        when :email_token then nil
+        else nil
+        end
+      end
+      
+      # Set up the write_attribute method to store values
+      token_values = {}
+      allow(user).to receive(:write_attribute) do |attr, value|
+        token_values[attr.to_sym] = value
+      end
+      
+      # Cache for decrypted values
+      allow(user).to receive(:field_decryption_cache).and_return({})
+      
+      # Stub update_all to verify SQL update
+      allow(User).to receive(:unscoped).and_return(User)
+      allow(User).to receive(:where).and_return(User)
+      expect(User).to receive(:update_all) do |updates|
+        expect(updates.keys).to include("first_name_token")
+        expect(updates.keys).to include("last_name_token")
+        expect(updates.keys).to include("email_token")
+      end
+      
+      # Set up the encryption service
+      expect(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+        # Generate tokens for each field
+        result = {}
+        tokens_data.each do |data|
+          key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:value]}"
+          result[key] = "token_for_#{data[:value]}"
+        end
+        result
+      end
+      
+      # Call the method directly
+      user.send(:process_after_save_tokenization)
+      
+      # Verify tokens got written
+      expect(token_values[:first_name_token]).to eq("token_for_Jane")
+      expect(token_values[:last_name_token]).to eq("token_for_Smith")
+      expect(token_values[:email_token]).to eq("token_for_jane.smith@example.com")
     end
   end
 

@@ -369,6 +369,8 @@ module PiiTokenizer
         # Get entity info
         entity_type = self.class.entity_type_proc.call(self)
         entity_id = self.class.entity_id_proc.call(self)
+        
+        # Skip if entity_id is still blank after save (unlikely but possible)
         return if entity_id.blank?
         
         # Only process after_save for new records 
@@ -390,22 +392,72 @@ module PiiTokenizer
         
         return unless needs_tokenization
         
-        # Process tokenization
-        process_tokenization
-        
-        # Update the database directly to bypass callbacks
-        updates = {}
-        
+        # Collect data for tokenization
+        tokens_data = []
+        fields_to_clear = []
+
         self.class.tokenized_fields.each do |field|
           field_str = field.to_s
-          token_column = "#{field_str}_token"
-          token_value = read_attribute(token_column)
+          token_column = "#{field}_token"
           
-          # Only include fields that have tokens
-          next if token_value.blank?
+          # Skip fields that already have tokens
+          next if read_attribute(token_column).present?
           
-          updates[token_column] = token_value
-          updates[field_str] = nil unless self.class.dual_write_enabled
+          # Get the value from memory
+          value = nil
+          
+          # First check if original value is in instance variable
+          if instance_variable_defined?("@original_#{field}")
+            value = instance_variable_get("@original_#{field}")
+          else
+            # Otherwise, use the current value
+            value = read_attribute(field)
+          end
+          
+          # Skip nil or blank values
+          next if value.nil? || (value.respond_to?(:blank?) && value.blank?)
+          
+          # Get PII type for this field
+          pii_type = self.class.pii_types[field_str]
+          next if pii_type.blank?
+          
+          # Add to tokenization batch
+          tokens_data << {
+            value: value,
+            entity_id: entity_id,
+            entity_type: entity_type,
+            field_name: field_str,
+            pii_type: pii_type
+          }
+        end
+        
+        # Skip if no data to encrypt
+        return if tokens_data.empty?
+        
+        # Encrypt in batch
+        key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
+        
+        # Update model with encrypted values
+        updates = {}
+        
+        tokens_data.each do |token_data|
+          field = token_data[:field_name]
+          key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
+          
+          next unless key_to_token.key?(key)
+          
+          token = key_to_token[key]
+          token_column = "#{field}_token"
+          
+          # Write token to token column in memory
+          write_attribute(token_column, token)
+          
+          # Add to updates for database
+          updates[token_column] = token
+          updates[field] = nil unless self.class.dual_write_enabled
+          
+          # Cache decrypted value
+          field_decryption_cache[field.to_sym] = token_data[:value]
         end
         
         # Apply updates if any
