@@ -494,10 +494,10 @@ module PiiTokenizer
         puts("** after_save ** previous_changes: #{previous_changes}") 
         is_new_record = respond_to?(:previous_changes) && previous_changes.key?('id')
 
-        puts("** after_save ** respond_to?(:changed_attributes): #{respond_to?(:changed_attributes)}")
-        puts("** after_save ** changed_attributes: #{changed_attributes}") 
+        puts("** after_save ** respond_to?(:changes): #{respond_to?(:changes)}")
+        puts("** after_save ** changes: #{changes}") 
         puts("** after_save ** ::ActiveRecord::VERSION::STRING #{::ActiveRecord::VERSION::STRING}")
-        is_new_record ||= respond_to?(:changed_attributes) && changed_attributes.key?('id')
+        is_new_record ||= respond_to?(:changes) && changes.key?('id')
         
         if defined?(Rails) && Rails.respond_to?(:logger)
           Rails.logger.info("PiiTokenizer: Is new record? #{is_new_record}")
