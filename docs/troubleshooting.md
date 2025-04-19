@@ -214,36 +214,70 @@ This guide helps you diagnose and resolve common issues when working with PiiTok
 ### Rails Version Compatibility
 
 **Symptoms:**
-- Undefined method errors
-- ActiveRecord integration issues
-- Migration generator errors
+- Inconsistent behavior between Rails 4 and Rails 5 applications
+- Error messages related to method visibility
+- Issues with changes not being detected
 
-**Causes:**
+**Possible causes:**
 - Rails version incompatibility
 - API changes between Rails versions
+- Using version-specific methods directly
+- Method visibility differences between Rails versions
 
-**Solutions:**
-1. Check compatibility in your Gemfile:
-   ```ruby
-   gem 'pii_tokenizer', '~> x.y.z'  # Use version compatible with your Rails
-   ```
+**Solution:**
+PiiTokenizer includes specialized handling for Rails version differences. We've created a dedicated [Rails Compatibility Guide](rails_compatibility.md) that provides comprehensive information on this topic. 
 
-2. Use version-specific code paths:
-   ```ruby
-   if Rails.version >= '6.0'
-     # Rails 6+ code
-   else
-     # Older Rails code
-   end
-   ```
+Key differences to be aware of:
+- In Rails 4, `changes` contains the field changes after save
+- In Rails 5+, `previous_changes` contains changes after save
+- Method visibility differences (e.g., `write_attribute` is private in Rails 4.2)
+- Special method implementations for Rails 4 compatibility
 
-3. Check for Rails-version specific initializers:
-   ```ruby
-   # config/initializers/pii_tokenizer.rb
-   PiiTokenizer.configure do |config|
-     config.rails_version = Rails.version  # If supported by the gem
-   end
-   ```
+Use the version-agnostic helper methods provided by PiiTokenizer:
+
+```ruby
+# For Rails 4 & 5 compatibility with change tracking:
+def field_changed?(field)
+  field_str = field.to_s
+  if rails5_or_newer?
+    respond_to?(:previous_changes) && previous_changes.key?(field_str)
+  else
+    respond_to?(:changes) && changes.key?(field_str)
+  end
+end
+```
+
+To diagnose issues:
+
+```ruby
+# In Rails console, test change detection:
+user = User.create(first_name: "John")
+user.update(first_name: "Jane")
+
+# Rails 4:
+user.changes
+
+# Rails 5+:
+user.previous_changes
+
+# Verify field_changed? works correctly:
+user.field_changed?('first_name')  # Works in both Rails 4 and 5+
+```
+
+Use version-agnostic methods:
+```ruby
+# Instead of direct Rails version specific code:
+if user.previous_changes.key?('first_name')  # Rails 5+ only
+
+# Use the version-agnostic helper:
+if user.active_changes.key?('first_name')    # Works in both Rails 4 and 5+
+```
+
+**Testing:**
+1. Run the Rails 4.2 compatibility tests: `bundle exec rspec spec/rails4_compatibility_spec.rb`
+2. Run all tests for your specific Rails version: `bundle exec rake rails4` or `bundle exec rake rails5`
+
+For more details and advanced techniques for handling Rails version differences, refer to the [Rails Compatibility Guide](rails_compatibility.md).
 
 ## Debugging Techniques
 

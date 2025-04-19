@@ -87,8 +87,8 @@ RSpec.describe PiiTokenizer::Tokenizable do
       # Create several users with token values
       users = Array.new(3) { |i| User.new(id: i + 1) }
       users.each_with_index do |user, i|
-        user.write_attribute(:first_name_token, "encrypted_first_name_#{i}")
-        user.write_attribute(:last_name_token, "encrypted_last_name_#{i}")
+        user.safe_write_attribute(:first_name_token, "encrypted_first_name_#{i}")
+        user.safe_write_attribute(:last_name_token, "encrypted_last_name_#{i}")
         # Simulate save without actually saving to DB
         allow(user).to receive(:persisted?).and_return(true)
         allow(user).to receive(:new_record?).and_return(false)
@@ -126,12 +126,12 @@ RSpec.describe PiiTokenizer::Tokenizable do
     it "supports User class's preload_decrypted_fields method" do
       # Create two test users
       user1 = User.new(id: 1)
-      user1.write_attribute(:first_name_token, 'encrypted_first_name_1')
-      user1.write_attribute(:last_name_token, 'encrypted_last_name_1')
+      user1.safe_write_attribute(:first_name_token, 'encrypted_first_name_1')
+      user1.safe_write_attribute(:last_name_token, 'encrypted_last_name_1')
 
       user2 = User.new(id: 2)
-      user2.write_attribute(:first_name_token, 'encrypted_first_name_2')
-      user2.write_attribute(:last_name_token, 'encrypted_last_name_2')
+      user2.safe_write_attribute(:first_name_token, 'encrypted_first_name_2')
+      user2.safe_write_attribute(:last_name_token, 'encrypted_last_name_2')
 
       users = [user1, user2]
 
@@ -170,8 +170,8 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
     it 'falls back to original column when not found in token column' do
       user = User.new(id: 1)
-      user.write_attribute(:first_name, 'Original John')
-      user.write_attribute(:first_name_token, nil)
+      user.safe_write_attribute(:first_name, 'Original John')
+      user.safe_write_attribute(:first_name_token, nil)
 
       # Allow reading from token column
       allow(User).to receive(:read_from_token_column).and_return(true)

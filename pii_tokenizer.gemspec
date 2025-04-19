@@ -36,6 +36,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'activesupport', '>= 4.2', '< 6.0'
   spec.add_dependency 'faraday', '>= 0.17.3', '< 2.0'
 
+  spec.add_development_dependency 'appraisal', '~> 2.4'
   spec.add_development_dependency 'bundler', '>= 1.17', '< 3.0'
   spec.add_development_dependency 'pry', '~> 0.14'
   spec.add_development_dependency 'rake', '~> 12.0'

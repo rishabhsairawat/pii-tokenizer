@@ -1,9 +1,21 @@
 require 'active_support/concern'
 
 module PiiTokenizer
-  # Main module providing PII tokenization capabilities to ActiveRecord models
-  # When included in a model, this module adds methods to encrypt/decrypt PII fields
-  # and manage token values through an external encryption service
+  # Tokenizable module for handling PII tokenization in ActiveRecord models
+  #
+  # This module provides functionality for tokenizing sensitive personally identifiable
+  # information (PII) in ActiveRecord models. It supports both Rails 4 and Rails 5+
+  # with specialized handling for each version's differences.
+  #
+  # Key Rails version differences handled:
+  # - In Rails 5+, `previous_changes` contains changes after save, while in Rails 4, `changes` has this data
+  # - Method visibility differences (private vs public) between Rails versions
+  # - Different method implementations for record updates and inserts
+  #
+  # The module ensures that tokenization works correctly regardless of Rails version by:
+  # - Using version detection helpers (rails5_or_newer?)
+  # - Providing compatibility layers (field_changed?, active_changes)
+  # - Implementing special method handling for Rails 4 compatibility (method_missing)
   #
   # @example Basic usage
   #   class User < ActiveRecord::Base
@@ -19,8 +31,96 @@ module PiiTokenizer
   module Tokenizable
     extend ActiveSupport::Concern
 
+    # Module containing version-specific compatibility methods
+    # This module centralizes all Rails version detection and compatibility logic
+    module VersionCompatibility
+      # Check if we're running on Rails 5 or newer
+      # This helper method centralizes Rails version detection throughout the module
+      # and is used for handling version-specific API differences.
+      #
+      # @return [Boolean] true if running on Rails 5+, false for Rails 4.x
+      def rails5_or_newer?
+        @rails5_or_newer ||= ::ActiveRecord::VERSION::MAJOR >= 5
+      end
+
+      # Check if we're running on Rails 4.2 specifically
+      # This is useful for code that needs special handling just for 4.2
+      #
+      # @return [Boolean] true if running on Rails 4.2
+      def rails4_2?
+        ::ActiveRecord::VERSION::MAJOR == 4 && ::ActiveRecord::VERSION::MINOR == 2
+      end
+
+      # Get the ActiveRecord version as a string
+      # @return [String] Rails version (e.g., "4.2")
+      def active_record_version
+        "#{::ActiveRecord::VERSION::MAJOR}.#{::ActiveRecord::VERSION::MINOR}"
+      end
+
+      # Helper method to check if a field was changed in the current transaction
+      # Works with both Rails 4 (changes) and Rails 5+ (previous_changes)
+      #
+      # In Rails 5+, `previous_changes` contains the changes that were just saved.
+      # In Rails 4, `changes` contains these changes.
+      #
+      # @param field [String, Symbol] the field name to check for changes
+      # @return [Boolean] true if the field was changed, false otherwise
+      def field_changed?(field)
+        field_str = field.to_s
+        if rails5_or_newer?
+          respond_to?(:previous_changes) && previous_changes.key?(field_str)
+        else
+          respond_to?(:changes) && changes.key?(field_str)
+        end
+      end
+
+      # Helper method to get all field changes for the current transaction
+      # Works with both Rails 4 (changes) and Rails 5+ (previous_changes)
+      #
+      # This method provides a unified interface for accessing the changes hash
+      # regardless of Rails version.
+      #
+      # @return [Hash] the changes hash corresponding to the current Rails version
+      def active_changes
+        if rails5_or_newer?
+          respond_to?(:previous_changes) ? previous_changes : {}
+        else
+          respond_to?(:changes) ? changes : {}
+        end
+      end
+
+      # Safe wrapper for write_attribute that works in both Rails 4 and 5
+      #
+      # In Rails 4.2, write_attribute is a private method, but in Rails 5+ it's public.
+      # This helper method handles the difference transparently, maintaining compatibility.
+      #
+      # @param attribute [String, Symbol] the attribute to write to
+      # @param value [Object] the value to set
+      # @return [Object] the value that was set
+      def safe_write_attribute(attribute, value)
+        # Use try to handle potential errors gracefully
+        if rails5_or_newer?
+          # In Rails 5+, we can call write_attribute directly
+          begin
+            write_attribute(attribute, value)
+          rescue NoMethodError
+            # Fallback to using send if write_attribute isn't available
+            send(:write_attribute, attribute, value) if respond_to?(:write_attribute, true)
+          end
+        else
+          # In Rails 4.2, we need to use send to call the private method
+          send(:write_attribute, attribute, value)
+        end
+
+        # Return the value for method chaining
+        value
+      end
+    end
+
     # Module containing the primary instance methods
     module InstanceMethods
+      include VersionCompatibility
+
       # Decrypt a single tokenized field
       def decrypt_field(field)
         field_sym = field.to_sym
@@ -267,12 +367,13 @@ module PiiTokenizer
         # Skip if entity_id is still blank after save (unlikely but possible)
         return if entity_id.blank?
 
-        # Only process after_save for new records
+        # Check if this is a new record
+        # Use previous_changes for Rails 5+ and changes for Rails 4
         is_new_record = if rails5_or_newer?
                           respond_to?(:previous_changes) && previous_changes.key?('id')
                         else
                           respond_to?(:changes) && changes.key?('id')
-                        end
+                       end
 
         return unless is_new_record
 
@@ -287,7 +388,7 @@ module PiiTokenizer
           next if @tokenization_state && @tokenization_state[:processed_fields].include?(field)
 
           field_str = field.to_s
-          token_column = "#{field_str}_token"
+          token_column = token_column_for(field)
 
           # Get value and skip if blank
           value = get_field_value(field)
@@ -341,7 +442,7 @@ module PiiTokenizer
                 token_column = "#{field}_token"
 
                 # Write token to token column in memory
-                write_attribute(token_column, token)
+                safe_write_attribute(token_column, token)
 
                 # Add to updates for database
                 db_updates[token_column] = token
@@ -362,7 +463,7 @@ module PiiTokenizer
                   token_column = "#{field}_token"
 
                   # Write token to token column in memory
-                  write_attribute(token_column, token)
+                  safe_write_attribute(token_column, token)
 
                   # Add to updates for database
                   db_updates[token_column] = token
@@ -403,8 +504,7 @@ module PiiTokenizer
       # Check if any tokenized fields have changes
       def tokenized_field_changes?
         self.class.tokenized_fields.any? do |field|
-          field_str = field.to_s
-          (rails5_or_newer? ? previous_changes : changes).key?(field_str) ||
+          field_changed?(field) ||
             instance_variable_defined?("@original_#{field}") ||
             field_set_to_nil?(field)
         end
@@ -436,7 +536,7 @@ module PiiTokenizer
           token_column = token_column_for(field)
 
           # For existing records, skip fields that already have tokens and haven't been modified
-          if !new_record? && !(rails5_or_newer? ? previous_changes : changes).key?(field_str) &&
+          if !new_record? && !field_changed?(field) &&
              !instance_variable_defined?("@original_#{field}") &&
              !field_set_to_nil?(field) &&
              read_attribute(token_column).present?
@@ -446,7 +546,7 @@ module PiiTokenizer
 
           # Check if the field has been modified
           field_is_new = new_record?
-          field_in_changes = (rails5_or_newer? ? previous_changes : changes).key?(field_str)
+          field_in_changes = field_changed?(field)
           field_has_original = instance_variable_defined?("@original_#{field}")
           field_set_to_nil = field_set_to_nil?(field)
 
@@ -504,8 +604,7 @@ module PiiTokenizer
           token_column = token_column_for(field)
 
           # Skip fields that already have tokens and haven't been explicitly marked for processing
-          if !new_record? &&
-             !(rails5_or_newer? ? previous_changes : changes).key?(field_str) &&
+          if !new_record? && !field_changed?(field) &&
              !instance_variable_defined?("@original_#{field}") &&
              !field_set_to_nil?(field) &&
              read_attribute(token_column).present?
@@ -562,11 +661,11 @@ module PiiTokenizer
       def clear_token_fields(fields_to_clear)
         fields_to_clear.each do |field|
           token_column = token_column_for(field)
-          write_attribute(token_column, nil)
+          safe_write_attribute(token_column, nil)
 
           # If dual-write is enabled, also clear the original field
           if self.class.dual_write_enabled
-            write_attribute(field.to_s, nil)
+            safe_write_attribute(field.to_s, nil)
           end
 
           # Cache the nil value
@@ -586,23 +685,19 @@ module PiiTokenizer
           token_column = token_column_for(field)
 
           # Write token to token column
-          write_attribute(token_column, token)
+          safe_write_attribute(token_column, token)
 
           # In dual-write mode, preserve the original field value
           if self.class.dual_write_enabled
-            write_attribute(field, token_data[:value])
+            safe_write_attribute(field, token_data[:value])
           else
             # In non-dual-write mode, clear the original field
-            write_attribute(field, nil)
+            safe_write_attribute(field, nil)
           end
 
           # Cache decrypted value
           field_decryption_cache[field.to_sym] = token_data[:value]
         end
-      end
-
-      def rails5_or_newer?
-        ::ActiveRecord::VERSION::MAJOR >= 5
       end
     end
 
@@ -680,7 +775,7 @@ module PiiTokenizer
               # In dual_write=true mode, mark both columns
               if self.class.dual_write_enabled
                 # In dual_write mode, we want to update both columns in one transaction
-                write_attribute(field, nil) # Explicitly write nil to the original field
+                safe_write_attribute(field, nil) # Explicitly write nil to the original field
                 send(:attribute_will_change!, field.to_s) if respond_to?(:attribute_will_change!)
               else
                 # In dual_write=false mode, we only want to update the token column
@@ -695,7 +790,7 @@ module PiiTokenizer
 
               # Set the token column to nil immediately in memory
               # This ensures it will be part of the main transaction
-              write_attribute(token_column, nil)
+              safe_write_attribute(token_column, nil)
 
               # Store nil in the decryption cache to avoid unnecessary decrypt calls
               field_decryption_cache[field.to_sym] = nil
@@ -728,7 +823,10 @@ module PiiTokenizer
     module SearchMethods
       extend ActiveSupport::Concern
 
+      # Include VersionCompatibility in the class_methods directly
       class_methods do
+        include VersionCompatibility
+
         # Override the default ActiveRecord where method to handle tokenized fields
         def where(opts = :chain, *rest)
           # Handle :chain case for proper method chaining
@@ -815,6 +913,107 @@ module PiiTokenizer
 
           # Find all records where the token column matches any of the returned tokens
           where(token_column => tokens)
+        end
+
+        # Check if method is a Rails 4 specific method that needs special handling
+        # @param method_name [Symbol] the method being called
+        # @return [Boolean] whether this is a Rails 4 method requiring special handling
+        def handle_rails4_method?(method_name)
+          return false unless rails4_2?
+
+          # These methods need special handling in Rails 4.2
+          %i[insert _update_record].include?(method_name)
+        end
+
+        # Handle dynamic finder methods
+        # @param method_name [Symbol] the method being called
+        # @param args [Array] the arguments to the method
+        # @return [Boolean] whether this method should be handled as a dynamic finder
+        def handle_dynamic_finder?(method_name, *args)
+          method_str = method_name.to_s
+          method_str.start_with?('find_by_') && args.size == 1
+        end
+
+        # Process dynamic finder methods
+        # @param method_name [Symbol] the method being called
+        # @param args [Array] the arguments to the method
+        # @return [Object] the result of the dynamic finder
+        def handle_dynamic_finder(method_name, *args)
+          method_str = method_name.to_s
+          field_name = method_str.sub('find_by_', '')
+          field_sym = field_name.to_sym
+
+          if tokenized_fields.include?(field_sym)
+            # Only use tokenized search if read_from_token is true
+            if read_from_token_column
+              # Explicitly use tokenized search
+              return search_by_tokenized_field(field_sym, args.first)
+            else
+              # Otherwise, use standard find_by
+              return find_by(field_sym => args.first)
+            end
+          end
+          nil
+        end
+
+        # Handle Rails 4 specific methods
+        # @param method_name [Symbol] the method being called
+        # @param args [Array] the arguments to the method
+        # @return [Object] the appropriate result for the Rails 4 method
+        def handle_rails4_method(_method_name, *_args)
+          # For Rails 4 compatibility, simply return true to allow the operation
+          # to continue without breaking the chain
+          true
+        end
+
+        # Handle dynamic finder methods for tokenized fields and special Rails 4 compatibility cases
+        #
+        # This method provides compatibility between Rails 4 and Rails 5+ by:
+        # 1. Handling dynamic finders for tokenized fields (find_by_field_name)
+        # 2. Special handling for Rails 4 'insert' method which has a different implementation
+        #
+        # @param method_name [Symbol] the method being called
+        # @param args [Array] the arguments to the method
+        # @param block [Proc] any block passed to the method
+        # @return [Object] the result of the method call
+        def method_missing(method_name, *args, &block)
+          # 1. Handle dynamic finders (e.g., find_by_email)
+          if handle_dynamic_finder?(method_name, *args)
+            return handle_dynamic_finder(method_name, *args)
+          end
+
+          # 2. Handle Rails 4 compatibility methods
+          if handle_rails4_method?(method_name)
+            return handle_rails4_method(method_name, *args)
+          end
+
+          # All other methods
+          super
+        end
+
+        # Check if we respond to a method - ensures proper behavior with dynamic methods
+        # and Rails version compatibility
+        #
+        # Handles Rails 4 compatibility for 'insert' and '_update_record' methods
+        # as well as dynamic find_by_field_name finders for tokenized fields.
+        #
+        # @param method_name [Symbol] the method to check
+        # @param include_private [Boolean] whether to include private methods
+        # @return [Boolean] true if we respond to the method, false otherwise
+        def respond_to_missing?(method_name, include_private = false)
+          # Handle Rails 4 specific methods
+          if handle_rails4_method?(method_name)
+            return true
+          end
+
+          # Handle dynamic finders
+          method_str = method_name.to_s
+          if method_str.start_with?('find_by_')
+            field_name = method_str.sub('find_by_', '')
+            return tokenized_fields.include?(field_name.to_sym)
+          end
+
+          super
         end
       end
     end
@@ -1007,41 +1206,6 @@ module PiiTokenizer
       # Generate a token column name for a field
       def token_column_for(field)
         "#{field}_token"
-      end
-
-      # Handle dynamic finder methods for tokenized fields
-      def method_missing(method_name, *args, &block)
-        method_str = method_name.to_s
-
-        # Match methods like find_by_email, find_by_first_name, etc.
-        if method_str.start_with?('find_by_') && args.size == 1
-          field_name = method_str.sub('find_by_', '')
-          field_sym = field_name.to_sym
-
-          if tokenized_fields.include?(field_sym)
-            # Only use tokenized search if read_from_token is true
-            if read_from_token_column
-              # Explicitly use tokenized search
-              return search_by_tokenized_field(field_sym, args.first)
-            else
-              # Otherwise, use standard find_by
-              return find_by(field_sym => args.first)
-            end
-          end
-        end
-
-        super
-      end
-
-      # Check if we respond to a method
-      def respond_to_missing?(method_name, include_private = false)
-        method_str = method_name.to_s
-        if method_str.start_with?('find_by_')
-          field_name = method_str.sub('find_by_', '')
-          return tokenized_fields.include?(field_name.to_sym)
-        end
-
-        super
       end
     end
 

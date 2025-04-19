@@ -20,64 +20,75 @@ RSpec.describe 'Custom PII Types' do
     end
 
     it 'uses the custom pii_types when encrypting' do
-      encrypt_response = {
-        'CONTACT:Contact_1:NAME' => 'encrypted_name_token',
-        'CONTACT:Contact_1:PHONE' => 'encrypted_phone_token',
-        'CONTACT:Contact_1:EMAIL' => 'encrypted_email_token'
-      }
+      # Set up test data
+      contact = Contact.new(id: 1, full_name: 'John Smith', phone_number: '123-456-7890', email_address: 'john@example.com')
 
-      expect(encryption_service).to receive(:encrypt_batch).with(
-        array_including(
-          {
-            value: 'John Smith',
-            entity_id: 'Contact_1',
+      # Allow persisted? and entity_id to work
+      allow(contact).to receive(:persisted?).and_return(true)
+      allow(contact).to receive(:new_record?).and_return(false)
+
+      # Set up the encryption service expectation
+      expect(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+        # Verify the tokens_data contains the correct pii_types
+        expect(tokens_data).to include(
+          hash_including(
             entity_type: 'contact',
+            entity_id: 'Contact_1',
             field_name: 'full_name',
-            pii_type: 'NAME'
-          },
-          {
-            value: '123-456-7890',
-            entity_id: 'Contact_1',
+            pii_type: 'NAME',
+            value: 'John Smith'
+          ),
+          hash_including(
             entity_type: 'contact',
+            entity_id: 'Contact_1',
             field_name: 'phone_number',
-            pii_type: 'PHONE'
-          },
-          {
-            value: 'john@example.com',
-            entity_id: 'Contact_1',
+            pii_type: 'PHONE',
+            value: '123-456-7890'
+          ),
+          hash_including(
             entity_type: 'contact',
+            entity_id: 'Contact_1',
             field_name: 'email_address',
-            pii_type: 'EMAIL'
-          }
+            pii_type: 'EMAIL',
+            value: 'john@example.com'
+          )
         )
-      ).and_return(encrypt_response)
 
-      # Directly call the encryption method
+        # Return mock tokens
+        {
+          'CONTACT:Contact_1:NAME:John Smith' => 'encrypted_name_token',
+          'CONTACT:Contact_1:PHONE:123-456-7890' => 'encrypted_phone_token',
+          'CONTACT:Contact_1:EMAIL:john@example.com' => 'encrypted_email_token'
+        }
+      end
+
+      # Create a mock for update_all to prevent actual DB operations
+      db_updates = {}
+      allow(Contact).to receive(:unscoped).and_return(Contact)
+      allow(Contact).to receive(:where).and_return(Contact)
+      allow(Contact).to receive(:update_all) do |updates|
+        db_updates = updates
+        1 # Return 1 row affected
+      end
+
+      # Trigger the encryption
       contact.send(:encrypt_pii_fields)
 
-      # Manually write the values as we're testing the behavior
-      contact.write_attribute(:full_name_token, 'encrypted_name_token')
-      contact.write_attribute(:phone_number_token, 'encrypted_phone_token')
-      contact.write_attribute(:email_address_token, 'encrypted_email_token')
-      contact.write_attribute(:full_name, nil)
-      contact.write_attribute(:phone_number, nil)
-      contact.write_attribute(:email_address, nil)
-
-      # The token columns should be encrypted
-      expect(contact.read_attribute(:full_name_token)).to eq('encrypted_name_token')
-      expect(contact.read_attribute(:phone_number_token)).to eq('encrypted_phone_token')
-      expect(contact.read_attribute(:email_address_token)).to eq('encrypted_email_token')
-
-      # Original columns should be nil since dual_write is false
-      expect(contact.read_attribute(:full_name)).to be_nil
-      expect(contact.read_attribute(:phone_number)).to be_nil
-      expect(contact.read_attribute(:email_address)).to be_nil
+      # Verify that correct token values would be stored
+      expect(contact.full_name_token).to eq('encrypted_name_token')
+      expect(contact.phone_number_token).to eq('encrypted_phone_token')
+      expect(contact.email_address_token).to eq('encrypted_email_token')
     end
 
     it 'uses the custom pii_types when decrypting' do
-      # Setup encrypted values in the token columns
-      contact.write_attribute(:full_name_token, 'encrypted_name_token')
-      contact.write_attribute(:phone_number_token, 'encrypted_phone_token')
+      # Set up test data
+      contact = Contact.new(id: 42)
+
+      # Manually set token values
+      contact.safe_write_attribute(:full_name_token, 'encrypted_name_token')
+      contact.safe_write_attribute(:phone_number_token, 'encrypted_phone_token')
+
+      allow(contact).to receive(:persisted?).and_return(true)
 
       # We need to stub read_from_token_column to true in this context
       allow(Contact).to receive(:read_from_token_column).and_return(true)

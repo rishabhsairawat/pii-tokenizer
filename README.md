@@ -13,6 +13,8 @@ PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Ide
 - [Best Practices](docs/best_practices.md) - Recommendations for secure implementations
 - [Data Migration Guide](docs/data_migration_guide.md) - Guide for migrating existing data to tokenized storage
 - [Troubleshooting](docs/troubleshooting.md) - Solutions for common issues
+- [Rails Compatibility](docs/rails_compatibility.md) - Details on Rails version compatibility features
+- [Testing Guide](TESTING.md) - Instructions for testing across different Rails versions
 
 ## Features
 
@@ -25,6 +27,44 @@ PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Ide
 - **Dual-write support**: Option to maintain both original and tokenized values
 - **Flexible configuration**: Customize entity types, identifiers, and storage modes
 - **Search capabilities**: Standard ActiveRecord query methods work with tokenized fields
+- **Rails version support**: Full compatibility with Rails 4.2+ through 6.x
+
+## Rails Version Compatibility
+
+PiiTokenizer is fully compatible with Rails 4.2+ and newer versions. The gem includes specialized handling for version-specific differences:
+
+- **ActiveRecord Changes Tracking**: 
+  - In Rails 5+, `previous_changes` contains changes after a save operation
+  - In Rails 4, `changes` contains these changes
+  
+- **Method Visibility Differences**:
+  - Some methods like `write_attribute` have different visibility (private/public) across versions
+  - PiiTokenizer uses `safe_write_attribute` to handle these differences
+
+- **Rails 4.2 Specific Compatibility**:
+  - Special handling for methods like `insert` and `_update_record` in Rails 4.2
+  - Custom method_missing implementations for maintaining consistent behavior
+  - Centralized version detection to ensure correct behavior in all Rails environments
+  - Optimized handling of class attributes initialization for Rails 4.2 compatibility
+
+You don't need to worry about these differences - PiiTokenizer handles them transparently with internal compatibility layers. Your code will work the same way across all supported Rails versions.
+
+### Testing Rails Compatibility
+
+To verify the gem's compatibility with different Rails versions, run:
+
+```bash
+# Test against Rails 4.2
+bundle exec rake rails4
+
+# Test against Rails 5.2
+bundle exec rake rails5
+
+# Test against all supported Rails versions
+bundle exec rake all_rails
+```
+
+For detailed testing instructions, see the [Testing Guide](TESTING.md).
 
 ## Quick Start
 

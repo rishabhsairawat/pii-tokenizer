@@ -54,9 +54,9 @@ RSpec.shared_context "with tokenizable models" do
     user = User.new(default_attrs.merge(attributes))
     
     # Set token values
-    user.write_attribute(:first_name_token, "token_for_#{user.first_name}")
-    user.write_attribute(:last_name_token, "token_for_#{user.last_name}")  
-    user.write_attribute(:email_token, "token_for_#{user.email}")
+    user.safe_write_attribute(:first_name_token, "token_for_#{user.first_name}")
+    user.safe_write_attribute(:last_name_token, "token_for_#{user.last_name}")  
+    user.safe_write_attribute(:email_token, "token_for_#{user.email}")
     
     # Mark as persisted
     allow(user).to receive(:new_record?).and_return(false)

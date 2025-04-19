@@ -1,5 +1,9 @@
 require 'bundler/setup'
 require 'simplecov'
+require 'fileutils'
+require 'logger'
+require 'active_record'
+require 'webmock/rspec'
 
 # Configure SimpleCov for test coverage reporting
 if ENV['COVERAGE'] == 'true'
@@ -22,15 +26,17 @@ if ENV['COVERAGE'] == 'true'
   puts 'SimpleCov enabled - generating coverage report'
 end
 
-require 'pii_tokenizer'
-require 'active_record'
-require 'webmock/rspec' # Load WebMock explicitly for all tests
-
 # Create support directory if it doesn't exist
 FileUtils.mkdir_p('spec/support') unless File.directory?('spec/support')
 
-# Load all support files
-Dir['./spec/support/**/*.rb'].sort.each { |file| require file }
+# Load Rails version compatibility patches first
+require_relative 'support/bigdecimal_patch'
+
+# Then load the actual code
+require 'pii_tokenizer'
+
+# Load database setup
+require_relative 'support/database_setup'
 
 # Add a test implementation of callback methods
 module CallbackMethods
@@ -58,11 +64,99 @@ class Class
   include CallbackMethods
 end
 
-# Set up an in-memory database for testing
-ActiveRecord::Base.establish_connection(
-  adapter: 'sqlite3',
-  database: ':memory:'
-)
+# Define test models
+class User < ActiveRecord::Base
+  include PiiTokenizer::Tokenizable
+
+  # Helper for test compatibility with Rails 4 and 5
+  def safe_write_attribute(attribute, value)
+    if ::ActiveRecord::VERSION::MAJOR >= 5
+      write_attribute(attribute, value)
+    else
+      # In Rails 4.2, write_attribute is private
+      send(:write_attribute, attribute, value)
+    end
+  end
+
+  tokenize_pii fields: {
+    first_name: 'FIRST_NAME',
+    last_name: 'LAST_NAME',
+    email: 'EMAIL'
+  },
+               entity_type: 'customer',
+               entity_id: ->(record) { "User_customer_#{record.id}" },
+               dual_write: false,
+               read_from_token: true
+end
+
+class InternalUser < ActiveRecord::Base
+  include PiiTokenizer::Tokenizable
+
+  # Helper for test compatibility with Rails 4 and 5
+  def safe_write_attribute(attribute, value)
+    if ::ActiveRecord::VERSION::MAJOR >= 5
+      write_attribute(attribute, value)
+    else
+      # In Rails 4.2, write_attribute is private
+      send(:write_attribute, attribute, value)
+    end
+  end
+
+  tokenize_pii fields: %i[first_name last_name],
+               entity_type: 'internal_staff',
+               entity_id: ->(record) { "InternalUser_#{record.id}_#{record.role}" },
+               dual_write: false,
+               read_from_token: true
+end
+
+class Contact < ActiveRecord::Base
+  include PiiTokenizer::Tokenizable
+
+  # Helper for test compatibility with Rails 4 and 5
+  def safe_write_attribute(attribute, value)
+    if ::ActiveRecord::VERSION::MAJOR >= 5
+      write_attribute(attribute, value)
+    else
+      # In Rails 4.2, write_attribute is private
+      send(:write_attribute, attribute, value)
+    end
+  end
+
+  tokenize_pii fields: {
+    full_name: 'NAME',
+    phone_number: 'PHONE',
+    email_address: 'EMAIL'
+  },
+               entity_type: 'contact',
+               entity_id: ->(record) { "Contact_#{record.id}" },
+               dual_write: false,
+               read_from_token: true
+end
+
+# Load shared contexts - either the combined file OR individual files
+if File.exist?('spec/support/shared_contexts.rb')
+  # If shared_contexts.rb exists, use that instead of the other individual files
+  require_relative 'support/shared_contexts'
+else
+  # Otherwise load the other individual shared context files
+  require_relative 'support/shared_contexts/with_encryption_service'
+  require_relative 'support/shared_contexts/with_tokenizable_models'
+  require_relative 'support/shared_contexts/with_http_mocks'
+end
+
+# Always load the tokenization test helpers
+require_relative 'support/shared_contexts/tokenization_test_helpers'
+
+# Load any remaining support files
+Dir['./spec/support/**/*.rb'].sort.each do |file|
+  # Skip files we've already loaded
+  next if file =~ /bigdecimal_patch\.rb/ ||
+          file =~ /database_setup\.rb/ ||
+          file =~ /shared_contexts\.rb/ ||
+          file =~ %r{shared_contexts/}
+
+  require file
+end
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure
@@ -98,83 +192,12 @@ RSpec.configure do |config|
       config.log_level = Logger::FATAL
     end
   end
-  
-  # Include shared contexts for all tests tagged with appropriate metadata
-  config.include_context "with encryption service", :use_encryption_service
-  config.include_context "with tokenizable models", :use_tokenizable_models
-  config.include_context "with http mocks", :use_http_mocks
-end
 
-# Create test tables
-ActiveRecord::Schema.define do
-  create_table :users, force: true do |t|
-    t.string :first_name
-    t.string :last_name
-    t.string :email
+  # Include the tokenization test helpers in all tests
+  config.include_context 'tokenization test helpers'
 
-    # Add token columns
-    t.string :first_name_token
-    t.string :last_name_token
-    t.string :email_token
-  end
-
-  create_table :internal_users, force: true do |t|
-    t.string :first_name
-    t.string :last_name
-    t.string :role
-
-    # Add token columns
-    t.string :first_name_token
-    t.string :last_name_token
-  end
-
-  create_table :contacts, force: true do |t|
-    t.string :full_name
-    t.string :phone_number
-    t.string :email_address
-
-    # Add token columns
-    t.string :full_name_token
-    t.string :phone_number_token
-    t.string :email_address_token
-  end
-end
-
-# Define test models
-class User < ActiveRecord::Base
-  include PiiTokenizer::Tokenizable
-
-  tokenize_pii fields: {
-    first_name: 'FIRST_NAME',
-    last_name: 'LAST_NAME',
-    email: 'EMAIL'
-  },
-               entity_type: 'customer',
-               entity_id: ->(record) { "User_customer_#{record.id}" },
-               dual_write: false,
-               read_from_token: true
-end
-
-class InternalUser < ActiveRecord::Base
-  include PiiTokenizer::Tokenizable
-
-  tokenize_pii fields: %i[first_name last_name],
-               entity_type: 'internal_staff',
-               entity_id: ->(record) { "InternalUser_#{record.id}_#{record.role}" },
-               dual_write: false,
-               read_from_token: true
-end
-
-class Contact < ActiveRecord::Base
-  include PiiTokenizer::Tokenizable
-
-  tokenize_pii fields: {
-    full_name: 'NAME',
-    phone_number: 'PHONE',
-    email_address: 'EMAIL'
-  },
-               entity_type: 'contact',
-               entity_id: ->(record) { "Contact_#{record.id}" },
-               dual_write: false,
-               read_from_token: true
+  # Include other shared contexts with tags
+  config.include_context 'with encryption service', :use_encryption_service
+  config.include_context 'with tokenizable models', :use_tokenizable_models
+  config.include_context 'with http mocks', :use_http_mocks
 end
