@@ -142,6 +142,9 @@ module PiiTokenizer
         # For new records without ID, delay tokenization until after save
         return if entity_id.blank?
 
+        # Initialize token tracking for this record
+        @tokenization_state = { processed_fields: [], pending_db_updates: {} }
+
         # Early return for persisted records with no changes to tokenized fields
         unless new_record?
           # Check if any tokenized fields have changes
@@ -182,9 +185,14 @@ module PiiTokenizer
 
             @_tokens_to_persist[token_column] = token_value
 
+            # Record this in our tokenization state
+            @tokenization_state[:pending_db_updates][token_column] = token_value
+            @tokenization_state[:processed_fields] << field
+
             # For dual_write=false, also clear the original field
             unless self.class.dual_write_enabled
               @_tokens_to_persist[field_str] = nil
+              @tokenization_state[:pending_db_updates][field_str] = nil
             end
           end
 
@@ -197,7 +205,9 @@ module PiiTokenizer
                 self.class.unscoped.where(id: id).update_all(@_tokens_to_persist)
               rescue StandardError => e
                 # Silently handle errors to avoid breaking the application
-                Rails.logger.error("PiiTokenizer: Failed to persist tokens in after_commit hook: #{e.message}")
+                if defined?(Rails) && Rails.respond_to?(:logger)
+                  Rails.logger.error("PiiTokenizer: Failed to persist tokens in after_commit hook: #{e.message}")
+                end
               ensure
                 # Clear the stored tokens
                 @_tokens_to_persist = nil
@@ -222,6 +232,162 @@ module PiiTokenizer
                 # Silently handle errors in background thread
               end
             end
+          end
+        end
+      end
+
+      # Process tokenization after saving a new record
+      def process_after_save_tokenization
+        return unless persisted?
+        return if self.class.tokenized_fields.empty?
+
+        # Skip if we don't have tokenization state (meaning no tokens needed)
+        # or if all fields were already processed in before_save
+        if @tokenization_state
+          already_processed_fields = @tokenization_state[:processed_fields]
+          pending_updates = @tokenization_state[:pending_db_updates]
+
+          # If all tokenized fields have been processed and we have pending updates
+          # ready to be persisted, apply them directly without reprocessing
+          if already_processed_fields.sort == self.class.tokenized_fields.sort && pending_updates.any?
+            begin
+              self.class.unscoped.where(id: id).update_all(pending_updates)
+              return
+            rescue StandardError => e
+              Rails.logger.error("PiiTokenizer: Error during direct database update: #{e.class.name} - #{e.message}")
+              # Continue with normal processing if direct update fails
+            end
+          end
+        end
+
+        # Get entity info
+        entity_type = self.class.entity_type_proc.call(self)
+        entity_id = self.class.entity_id_proc.call(self)
+
+        # Skip if entity_id is still blank after save (unlikely but possible)
+        return if entity_id.blank?
+
+        # Only process after_save for new records
+        is_new_record = if rails5_or_newer?
+                          respond_to?(:previous_changes) && previous_changes.key?('id')
+                        else
+                          respond_to?(:changes) && changes.key?('id')
+                        end
+
+        return unless is_new_record
+
+        # Collect data for tokenization
+        tokens_data = []
+        db_updates = {}
+
+        # Track which fields we need to process
+        fields_to_process = []
+        self.class.tokenized_fields.each do |field|
+          # Skip fields that were already processed
+          next if @tokenization_state && @tokenization_state[:processed_fields].include?(field)
+
+          field_str = field.to_s
+          token_column = "#{field_str}_token"
+
+          # Get value and skip if blank
+          value = get_field_value(field)
+          next if value.blank?
+
+          # Get token - either from memory or get a new one
+          token = read_attribute(token_column)
+
+          if token.present?
+            # Token already exists in memory (from before_save callback)
+            # Just add it to database updates
+            db_updates[token_column] = token
+
+            # In dual_write=false mode, also clear the original field in DB
+            unless self.class.dual_write_enabled
+              db_updates[field_str] = nil
+            end
+          else
+            fields_to_process << field
+
+            # No token yet, need to encrypt the value
+            # Get PII type for this field
+            pii_type = self.class.pii_types[field_str]
+            next if pii_type.blank?
+
+            # Add to tokenization batch
+            tokens_data << {
+              value: value,
+              entity_id: entity_id,
+              entity_type: entity_type,
+              field_name: field_str,
+              pii_type: pii_type
+            }
+          end
+        end
+
+        # Process any fields that still need encryption
+        if tokens_data.any?
+          begin
+            # Encrypt in batch
+            key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
+
+            # Process encrypted values
+            tokens_data.each do |token_data|
+              field = token_data[:field_name]
+              key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
+
+              # First try the standard key format
+              if key_to_token.key?(key)
+                token = key_to_token[key]
+                token_column = "#{field}_token"
+
+                # Write token to token column in memory
+                write_attribute(token_column, token)
+
+                # Add to updates for database
+                db_updates[token_column] = token
+
+                # If not dual_write, clear the original field in DB
+                unless self.class.dual_write_enabled
+                  db_updates[field] = nil
+                end
+
+                # Cache decrypted value
+                field_decryption_cache[field.to_sym] = token_data[:value]
+              else
+                # Try alternative key format (field_name instead of value)
+                alt_key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:field_name]}"
+
+                if key_to_token.key?(alt_key)
+                  token = key_to_token[alt_key]
+                  token_column = "#{field}_token"
+
+                  # Write token to token column in memory
+                  write_attribute(token_column, token)
+
+                  # Add to updates for database
+                  db_updates[token_column] = token
+
+                  # If not dual_write, clear the original field in DB
+                  unless self.class.dual_write_enabled
+                    db_updates[field] = nil
+                  end
+
+                  # Cache decrypted value
+                  field_decryption_cache[field.to_sym] = token_data[:value]
+                end
+              end
+            end
+          rescue StandardError => e
+            Rails.logger.error("PiiTokenizer: Error during encrypt_batch: #{e.class.name} - #{e.message}")
+          end
+        end
+
+        # Apply updates to database if any exist
+        if db_updates.any?
+          begin
+            self.class.unscoped.where(id: id).update_all(db_updates)
+          rescue StandardError => e
+            Rails.logger.error("PiiTokenizer: Error during database update: #{e.class.name} - #{e.message}")
           end
         end
       end
@@ -300,6 +466,15 @@ module PiiTokenizer
       # Get token column name for a field
       def token_column_for(field)
         "#{field}_token"
+      end
+
+      # Get value for a field from instance variable or attribute
+      def get_field_value(field)
+        if instance_variable_defined?("@original_#{field}")
+          instance_variable_get("@original_#{field}")
+        else
+          read_attribute(field.to_s)
+        end
       end
 
       # Process tokenization for the specified fields
@@ -383,15 +558,6 @@ module PiiTokenizer
         update_model_with_tokens(tokens_data, key_to_token)
       end
 
-      # Get value for a field from instance variable or attribute
-      def get_field_value(field)
-        if instance_variable_defined?("@original_#{field}")
-          instance_variable_get("@original_#{field}")
-        else
-          read_attribute(field.to_s)
-        end
-      end
-
       # Clear token fields when value is nil
       def clear_token_fields(fields_to_clear)
         fields_to_clear.each do |field|
@@ -432,178 +598,6 @@ module PiiTokenizer
 
           # Cache decrypted value
           field_decryption_cache[field.to_sym] = token_data[:value]
-        end
-      end
-
-      # Process tokenization after saving a new record
-      def process_after_save_tokenization
-        return unless persisted?
-        return if self.class.tokenized_fields.empty?
-
-        # Get entity info
-        entity_type = self.class.entity_type_proc.call(self)
-        entity_id = self.class.entity_id_proc.call(self)
-
-        # Skip if entity_id is still blank after save (unlikely but possible)
-        return if entity_id.blank?
-
-        # Only process after_save for new records
-        is_new_record = if rails5_or_newer?
-                          respond_to?(:previous_changes) && previous_changes.key?('id')
-                        else
-                          respond_to?(:changes) && changes.key?('id')
-                        end
-
-        return unless is_new_record
-
-        # Collect data for tokenization
-        tokens_data = []
-        db_updates = {}
-
-        self.class.tokenized_fields.each do |field|
-          field_str = field.to_s
-          token_column = "#{field_str}_token"
-
-          # Get value and skip if blank
-          value = get_field_value(field)
-          next if value.blank?
-
-          # Get token - either from memory or get a new one
-          token = read_attribute(token_column)
-
-          if token.present?
-            # Token already exists in memory (from before_save callback)
-            # Just add it to database updates
-            db_updates[token_column] = token
-
-            # In dual_write=false mode, also clear the original field in DB
-            unless self.class.dual_write_enabled
-              db_updates[field_str] = nil
-            end
-          else
-            # No token yet, need to encrypt the value
-            # Get PII type for this field
-            pii_type = self.class.pii_types[field_str]
-            next if pii_type.blank?
-
-            # Add to tokenization batch
-            tokens_data << {
-              value: value,
-              entity_id: entity_id,
-              entity_type: entity_type,
-              field_name: field_str,
-              pii_type: pii_type
-            }
-          end
-        end
-
-        # Process any fields that still need encryption
-        if tokens_data.any?
-          begin
-            # Encrypt in batch
-            key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-
-            # Process encrypted values
-            tokens_data.each do |token_data|
-              field = token_data[:field_name]
-              key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-              # First try the standard key format
-              if key_to_token.key?(key)
-                token = key_to_token[key]
-                token_column = "#{field}_token"
-
-                # Write token to token column in memory
-                write_attribute(token_column, token)
-
-                # Add to updates for database
-                db_updates[token_column] = token
-
-                # If not dual_write, clear the original field in DB
-                unless self.class.dual_write_enabled
-                  db_updates[field] = nil
-                end
-
-                # Cache decrypted value
-                field_decryption_cache[field.to_sym] = token_data[:value]
-              else
-                # Try alternative key format (field_name instead of value)
-                alt_key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:field_name]}"
-
-                if key_to_token.key?(alt_key)
-                  token = key_to_token[alt_key]
-                  token_column = "#{field}_token"
-
-                  # Write token to token column in memory
-                  write_attribute(token_column, token)
-
-                  # Add to updates for database
-                  db_updates[token_column] = token
-
-                  # If not dual_write, clear the original field in DB
-                  unless self.class.dual_write_enabled
-                    db_updates[field] = nil
-                  end
-
-                  # Cache decrypted value
-                  field_decryption_cache[field.to_sym] = token_data[:value]
-                end
-              end
-            end
-          rescue StandardError => e
-            if defined?(Rails) && Rails.respond_to?(:logger)
-              Rails.logger.error("PiiTokenizer: Error during encrypt_batch: #{e.class.name} - #{e.message}")
-            end
-          end
-        end
-
-        # Apply updates to database if any exist
-        if db_updates.any?
-          begin
-            self.class.unscoped.where(id: id).update_all(db_updates)
-          rescue StandardError => e
-            if defined?(Rails) && Rails.respond_to?(:logger)
-              Rails.logger.error("PiiTokenizer: Error during database update: #{e.class.name} - #{e.message}")
-            end
-          end
-        end
-      end
-
-      # Update the database with tokens after save
-      def update_after_save(tokens_data, key_to_token)
-        updates = {}
-
-        tokens_data.each do |token_data|
-          field = token_data[:field_name]
-          key = "#{token_data[:entity_type].upcase}:#{token_data[:entity_id]}:#{token_data[:pii_type]}:#{token_data[:value]}"
-
-          next unless key_to_token.key?(key)
-
-          token = key_to_token[key]
-          token_column = "#{field}_token"
-
-          # Write token to token column in memory
-          write_attribute(token_column, token)
-
-          # Add to updates for database
-          updates[token_column] = token
-
-          # If not dual_write, clear the original field, otherwise preserve it
-          if !self.class.dual_write_enabled
-            updates[field] = nil
-            write_attribute(field, nil)
-          else
-            # In dual_write, preserve original value unless already changed
-            write_attribute(field, token_data[:value])
-          end
-
-          # Cache decrypted value
-          field_decryption_cache[field.to_sym] = token_data[:value]
-        end
-
-        # Apply updates if any
-        if updates.any?
-          self.class.unscoped.where(id: id).update_all(updates)
         end
       end
 

@@ -240,6 +240,7 @@ module PiiTokenizer
         if data.key?('data') && data['data'].is_a?(Array)
           data['data'].each do |item|
             item['decrypted_value'] = 'REDACTED' if item.key?('decrypted_value')
+            item['pii_field'] = 'REDACTED' if item.key?('pii_field')
           end
         end
         data.to_json
