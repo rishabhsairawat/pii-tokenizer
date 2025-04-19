@@ -133,17 +133,18 @@ module PiiTokenizer
 
       # Primary callback method for encrypting PII fields
       def encrypt_pii_fields
-        # Skip if no tokenized fields or if callbacks are disabled
+        # Skip if no tokenized fields
         return if self.class.tokenized_fields.empty?
-        return if skip_tokenization_callbacks?
         
         # Get entity information
         entity_type = self.class.entity_type_proc.call(self)
         entity_id = self.class.entity_id_proc.call(self)
 
+        puts("** before_save ** Entity Id is: #{entity_id}")
         # For new records without ID, delay tokenization until after save
         return if entity_id.blank?
 
+        puts("** before_save ** New Record?: #{new_record?}")
         # Early return for persisted records with no changes to tokenized fields
         if !new_record?
           # Check if any tokenized fields have changes
@@ -231,12 +232,6 @@ module PiiTokenizer
       end
 
       private
-      
-      # Check if tokenization callbacks should be skipped
-      def skip_tokenization_callbacks?
-        instance_variable_defined?(:@_skip_tokenization_callbacks) &&
-        instance_variable_get(:@_skip_tokenization_callbacks)
-      end
       
       # Check if a field is flagged to be set to nil
       def field_set_to_nil?(field)
@@ -477,12 +472,14 @@ module PiiTokenizer
           Rails.logger.info("PiiTokenizer: process_after_save_tokenization called for #{self.class.name} ##{id}")
         end
         
+        puts("** after_save ** persisted? #{persisted?}")
         return unless persisted?
         return if self.class.tokenized_fields.empty?
         
         # Get entity info
         entity_type = self.class.entity_type_proc.call(self)
         entity_id = self.class.entity_id_proc.call(self)
+        puts("** after_save ** Entity Id is: #{entity_id}")
         
         # Log entity info
         if defined?(Rails) && Rails.respond_to?(:logger)
@@ -1169,11 +1166,9 @@ module PiiTokenizer
       # Set up callbacks if the class supports them
       before_save :encrypt_pii_fields if respond_to?(:before_save)
       
-      # Use respond_to? to check if callbacks are supported by the class
-      if respond_to?(:after_save)
-        after_save :process_after_save_tokenization
-      end
-      
+      # Use respond_to? to check if callbacks are supported by the class      
+      after_save :process_after_save_tokenization if respond_to?(:after_save)
+
       if respond_to?(:after_find)
         after_find :register_for_decryption
       end
