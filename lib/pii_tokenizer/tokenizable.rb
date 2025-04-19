@@ -490,6 +490,8 @@ module PiiTokenizer
         return if entity_id.blank?
 
         # Only process after_save for new records 
+        puts("** after_save ** respond_to?(:previous_changes): #{respond_to?(:previous_changes)}")
+        puts("** after_save ** previous_changes: #{previous_changes}") 
         is_new_record = respond_to?(:previous_changes) && previous_changes.key?('id')
         
         if defined?(Rails) && Rails.respond_to?(:logger)
