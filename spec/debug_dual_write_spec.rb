@@ -24,7 +24,7 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
         last_name: 'LAST_NAME',
         email: 'EMAIL'
       },
-      entity_type: 'customer',
+      entity_type: 'user_uuid',
       entity_id: ->(record) { record.id.to_s },
       dual_write: false,
       read_from_token: true
@@ -112,7 +112,7 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
             last_name: 'LAST_NAME',
             email: 'EMAIL'
           },
-          entity_type: 'customer',
+          entity_type: 'user_uuid',
           entity_id: ->(record) { record.id.to_s },
           dual_write: true,
           read_from_token: false
@@ -157,7 +157,7 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
             last_name: 'LAST_NAME',
             email: 'EMAIL'
           },
-          entity_type: 'customer',
+          entity_type: 'user_uuid',
           entity_id: ->(record) { record.id.to_s },
           dual_write: true,
           read_from_token: false
@@ -187,7 +187,7 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
             last_name: 'LAST_NAME',
             email: 'EMAIL'
           },
-          entity_type: 'customer',
+          entity_type: 'user_uuid',
           entity_id: ->(record) { record.id.to_s },
           dual_write: true,
           read_from_token: false

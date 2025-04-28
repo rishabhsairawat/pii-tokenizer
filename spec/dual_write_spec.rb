@@ -14,7 +14,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
         last_name: 'LAST_NAME',
         email: 'EMAIL'
       },
-      entity_type: 'customer',
+      entity_type: 'user_uuid',
       entity_id: ->(record) { "#{record.id}" },
       dual_write: false,
       read_from_token: true
@@ -60,7 +60,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
         last_name: 'LAST_NAME',
         email: 'EMAIL'
       },
-      entity_type: 'customer',
+      entity_type: 'user_uuid',
       entity_id: ->(record) { "#{record.id}" },
       dual_write: false,
       read_from_token: true
@@ -76,7 +76,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           last_name: 'LAST_NAME',
           email: 'EMAIL'
         },
-        entity_type: 'customer',
+        entity_type: 'user_uuid',
         entity_id: ->(record) { "#{record.id}" },
         dual_write: true,
         read_from_token: false
@@ -196,7 +196,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       expect(user.first_name_token).to be_nil
     end
 
-    it 'performs only a single database write operation (INSERT) when creating a record' do
+    it 'performs database write operation in 2 steps (INSERT + UPDATE) when creating a record and entity_id is not present beforehand' do
       # Track SQL queries
       sql_queries = []
       ActiveSupport::Notifications.subscribe('sql.active_record') do |_, _, _, _, payload|
@@ -214,7 +214,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
 
       expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but found #{insert_queries.size}"
-      expect(update_queries.size).to eq(0), "Expected 0 UPDATE queries but found #{update_queries.size}: #{update_queries.inspect}"
+      expect(update_queries.size).to eq(1), "Expected 0 UPDATE queries but found #{update_queries.size}: #{update_queries.inspect}"
 
       # Verify that the tokens were correctly saved in the initial INSERT
       user.reload
@@ -236,7 +236,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           last_name: 'LAST_NAME',
           email: 'EMAIL'
         },
-        entity_type: 'customer',
+        entity_type: 'user_uuid',
         entity_id: ->(record) { "#{record.id}" },
         dual_write: false,
         read_from_token: true
@@ -433,7 +433,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           last_name: 'LAST_NAME',
           email: 'EMAIL'
         },
-        entity_type: 'customer',
+        entity_type: 'user_uuid',
         entity_id: ->(record) { "pre_available_id" }, # entity_id doesn't depend on record.id
         dual_write: true,
         read_from_token: false
@@ -476,7 +476,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           last_name: 'LAST_NAME',
           email: 'EMAIL'
         },
-        entity_type: 'customer',
+        entity_type: 'user_uuid',
         entity_id: ->(record) { "#{record.id}" }, # entity_id depends on record.id being available
         dual_write: true,
         read_from_token: false

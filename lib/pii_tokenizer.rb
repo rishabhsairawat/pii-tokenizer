@@ -13,7 +13,7 @@ require 'pii_tokenizer/railtie' if defined?(Rails)
 #     include PiiTokenizer::Tokenizable
 #
 #     tokenize_pii fields: [:first_name, :last_name, :email],
-#                  entity_type: 'customer',
+#                  entity_type: 'user_uuid',
 #                  entity_id: ->(user) { "user_#{user.id}" }
 #   end
 #

@@ -13,8 +13,8 @@ RSpec.shared_context "with tokenizable models" do
         last_name: 'LAST_NAME',
         email: 'EMAIL'
       },
-      entity_type: 'customer',
-      entity_id: ->(record) { "User_customer_#{record.id}" },
+      entity_type: 'user_uuid',
+      entity_id: ->(record) { "#{record.id}" },
       dual_write: false,
       read_from_token: true
     )

@@ -200,7 +200,7 @@ When `dual_write` is `true`, both the original column and the token column will 
 
 ```ruby
 tokenize_pii fields: [:email],
-             entity_type: 'customer',
+             entity_type: 'user_uuid',
              entity_id: ->(user) { "user_#{user.id}" },
              dual_write: true  # Keep original values in database too
 ```
@@ -215,7 +215,7 @@ You can explicitly set this value:
 
 ```ruby
 tokenize_pii fields: [:email],
-             entity_type: 'customer',
+             entity_type: 'user_uuid',
              entity_id: ->(user) { "user_#{user.id}" },
              dual_write: true,
              read_from_token: true  # Use token columns for reading

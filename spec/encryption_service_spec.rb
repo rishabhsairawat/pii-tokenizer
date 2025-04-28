@@ -21,14 +21,14 @@ RSpec.describe PiiTokenizer::EncryptionService do
           data: [
             {
               token: 'encrypted_john',
-              entity_type: 'CUSTOMER',
+              entity_type: 'user_uuid',
               entity_id: 'User_1',
               pii_type: 'FIRST_NAME',
               created_at: '2025-03-29T12:10:37.581+00:00'
             },
             {
               token: 'encrypted_doe',
-              entity_type: 'CUSTOMER',
+              entity_type: 'user_uuid',
               entity_id: 'User_1',
               pii_type: 'LAST_NAME',
               created_at: '2025-03-29T12:10:37.581+00:00'
@@ -103,13 +103,13 @@ RSpec.describe PiiTokenizer::EncryptionService do
 
     it 'correctly generates different keys based on input data' do
       tokens_data = [
-        { entity_type: 'customer', entity_id: '123', value: 'John', pii_type: 'NAME', field_name: 'name' },
+        { entity_type: 'user_uuid', entity_id: '123', value: 'John', pii_type: 'NAME', field_name: 'name' },
         { entity_type: 'employee', entity_id: '456', value: 'Jane', pii_type: 'NAME', field_name: 'name' }
       ]
 
       response_body = {
         data: [
-          { entity_type: 'customer', entity_id: '123', pii_type: 'NAME', pii_field: 'John', token: 'customer_token' },
+          { entity_type: 'user_uuid', entity_id: '123', pii_type: 'NAME', pii_field: 'John', token: 'customer_token' },
           { entity_type: 'employee', entity_id: '456', pii_type: 'NAME', pii_field: 'Jane', token: 'employee_token' }
         ]
       }.to_json
@@ -119,7 +119,7 @@ RSpec.describe PiiTokenizer::EncryptionService do
 
       result = service.encrypt_batch(tokens_data)
       expect(result).to eq(
-        'CUSTOMER:123:NAME:John' => 'customer_token',
+        'USER_UUID:123:NAME:John' => 'customer_token',
         'EMPLOYEE:456:NAME:Jane' => 'employee_token'
       )
     end

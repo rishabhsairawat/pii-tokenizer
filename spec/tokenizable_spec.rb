@@ -137,12 +137,12 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
     end
 
     it 'defines entity type' do
-      expect(user.entity_type).to eq('customer')
+      expect(user.entity_type).to eq('user_uuid')
       expect(user.entity_type).to eq(User.entity_type_proc.call(user))
     end
 
     it 'defines entity id' do
-      expect(user.entity_id).to eq('User_customer_1')
+      expect(user.entity_id).to eq('1')
       expect(user.entity_id).to eq(User.entity_id_proc.call(user))
     end
   end

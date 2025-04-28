@@ -249,7 +249,9 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
       # Set up encryption response using the correct entity type
       allow(encryption_service).to receive(:encrypt_batch).and_return({
-                                                                        'USER_UUID:1:FIRST_NAME' => 'encrypted_first_name'
+                                                                        'USER_UUID:1:FIRST_NAME:John' => 'token_for_john',
+                                                                        'USER_UUID:1:LAST_NAME:Doe' => 'token_for_doe',
+                                                                        'USER_UUID:1:EMAIL:john@example.com' => 'token_for_john@example.com'
                                                                       })
 
       # Make sure to use the actual entity type/id settings
@@ -257,10 +259,15 @@ RSpec.describe PiiTokenizer::Tokenizable do
       allow(user).to receive(:entity_id).and_return('1')
 
       # Directly call encrypt_pii_fields to avoid save logic
-      user.send(:encrypt_pii_fields)
-
+      user.save!
+      user.reload
       # Original field should not be nil
       expect(user.read_attribute(:first_name)).to eq('John')
+      expect(user.read_attribute(:first_name_token)).to eq('token_for_john')
+      expect(user.read_attribute(:last_name)).to eq('Doe')
+      expect(user.read_attribute(:last_name_token)).to eq('token_for_doe')
+      expect(user.read_attribute(:email)).to eq('john@example.com')
+      expect(user.read_attribute(:email_token)).to eq('token_for_john@example.com')
 
       # Reset the dual_write setting
       User.dual_write_enabled = original_dual_write

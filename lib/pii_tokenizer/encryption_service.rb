@@ -40,8 +40,8 @@ module PiiTokenizer
     # @raise [RuntimeError] If the encryption service returns an error
     # @example Encrypt user data
     #   tokens_data = [
-    #     {value: 'John Smith', entity_id: 'user_1', entity_type: 'customer', field_name: 'name', pii_type: 'NAME'},
-    #     {value: 'john@example.com', entity_id: 'user_1', entity_type: 'customer', field_name: 'email', pii_type: 'EMAIL'}
+    #     {value: 'John Smith', entity_id: 'user_1', entity_type: 'user_uuid', field_name: 'name', pii_type: 'NAME'},
+    #     {value: 'john@example.com', entity_id: 'user_1', entity_type: 'user_uuid', field_name: 'email', pii_type: 'EMAIL'}
     #   ]
     #   result = service.encrypt_batch(tokens_data)
     #   # => {"CUSTOMER:user_1:NAME" => "encrypted_token_1", "CUSTOMER:user_1:EMAIL" => "encrypted_token_2"}
