@@ -4,7 +4,7 @@ This guide will help you set up PiiTokenizer in your Rails application to secure
 
 ## Requirements
 
-- Ruby 2.4.1 or higher
+- Ruby 2.4.0 or higher
 - Rails 4.2 or higher
 - An external encryption service with a compatible API
 
@@ -77,11 +77,11 @@ end
 
 #### Configuration Options
 
-- **fields**: Hash mapping model field names to PII types
+- **fields**: Hash mapping model field names to PII types or an array of field names
 - **entity_type**: String or Proc that defines the entity type for the record
 - **entity_id**: Proc that returns a unique identifier for each record
 - **dual_write**: (Optional) Whether to write to both original and token columns (default: false)
-- **read_from_token**: (Optional) Whether to read from token columns (default: true when dual_write is false)
+- **read_from_token**: (Optional) Whether to read from token columns (default: true when dual_write is false, false when dual_write is true)
 
 ### 3. Add Token Columns
 

@@ -3,7 +3,6 @@
 [![Ruby](https://img.shields.io/badge/ruby-2.4.0%2B-blue.svg)](https://www.ruby-lang.org/en/)
 [![Rails](https://img.shields.io/badge/rails-4.2%2B-orange.svg)](https://rubyonrails.org/)
 
-
 PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Identifiable Information (PII) in ActiveRecord models. It integrates with an external encryption service to replace sensitive data with tokens, ensuring that PII data is never stored in plaintext in your database.
 
 ## Documentation
@@ -122,7 +121,19 @@ class User < ApplicationRecord
                },
                entity_type: 'USER',
                entity_id: ->(user) { user.id.to_s },
-               dual_write: true  # Optional: Keeps original values alongside tokens
+               dual_write: false  # Optional: Set to true to keep original values alongside tokens
+end
+```
+
+You can also use an array of field names:
+
+```ruby
+class Customer < ApplicationRecord
+  include PiiTokenizer::Tokenizable
+  
+  tokenize_pii fields: [:first_name, :last_name, :email],
+               entity_type: 'CUSTOMER',
+               entity_id: ->(customer) { customer.id.to_s }
 end
 ```
 
@@ -319,10 +330,11 @@ RSpec.configure do |config|
     mock_encryption_service = instance_double(PiiTokenizer::EncryptionService)
     
     # Set up mock behaviors for encrypt_batch
-    allow(mock_encryption_service).to receive(:encrypt_batch) do |entity_type, entity_id, values_hash|
+    allow(mock_encryption_service).to receive(:encrypt_batch) do |tokens_data|
       result = {}
-      values_hash.each do |field, value|
-        result[field] = { token: "token_for_#{value}", value: value }
+      tokens_data.each do |token_data|
+        key = "#{token_data[:entity_type]}:#{token_data[:entity_id]}:#{token_data[:pii_type]}"
+        result[key] = "token_for_#{token_data[:value]}"
       end
       result
     end
@@ -330,9 +342,9 @@ RSpec.configure do |config|
     # Set up mock behaviors for decrypt_batch
     allow(mock_encryption_service).to receive(:decrypt_batch) do |tokens|
       result = {}
-      tokens.each do |field, token|
+      tokens.each do |token|
         if token.to_s.start_with?('token_for_')
-          result[field] = { value: token.to_s.sub('token_for_', ''), token: token }
+          result[token] = token.to_s.sub('token_for_', '')
         end
       end
       result
@@ -359,4 +371,4 @@ end
 
 ## Acknowledgments
 
-- Built with ❤️ for secure data handling in Ruby on Rails applications 
+- Built with ❤️ for secure data handling in Ruby on Rails applications

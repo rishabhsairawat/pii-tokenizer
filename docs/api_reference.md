@@ -4,12 +4,39 @@ This document provides a comprehensive reference for the PiiTokenizer gem's API.
 
 ## Table of Contents
 
+- [Configuration](#configuration)
 - [Tokenizable Module](#tokenizable-module)
   - [Class Methods](#class-methods)
   - [Instance Methods](#instance-methods)
 - [EncryptionService](#encryptionservice)
 - [Generators](#generators)
-- [Rake Tasks](#rake-tasks)
+- [Version Compatibility](#version-compatibility)
+
+## Configuration
+
+### PiiTokenizer.configure
+
+Configures the gem with global settings.
+
+**Example:**
+
+```ruby
+PiiTokenizer.configure do |config|
+  config.encryption_service_url = ENV['ENCRYPTION_SERVICE_URL']
+  config.batch_size = 100
+  config.logger = Rails.logger
+  config.log_level = :info
+end
+```
+
+**Parameters:**
+
+| Option | Type | Description | Default |
+|--------|------|-------------|---------|
+| `encryption_service_url` | String | URL of the external encryption service | Required |
+| `batch_size` | Integer | Default number of records to process in a batch | 100 |
+| `logger` | Logger | Logger instance for logging operations | `Logger.new(STDOUT)` |
+| `log_level` | Symbol | Log level for the logger | `:info` |
 
 ## Tokenizable Module
 
@@ -25,11 +52,11 @@ Configures tokenization for the model.
 
 | Option | Type | Description | Default |
 |--------|------|-------------|---------|
-| `fields` | Hash | The fields to tokenize with their PII types | Required |
-| `entity_type` | String | The entity type for encryption | Required |
-| `entity_id` | Proc, Symbol | Method or proc that returns the entity ID | Required |
+| `fields` | Hash or Array | Fields to tokenize with their PII types, or array of field names | Required |
+| `entity_type` | String or Proc | The entity type for encryption | Required |
+| `entity_id` | Proc | Method or proc that returns the entity ID | Required |
 | `dual_write` | Boolean | Whether to write to both original and token columns | `false` |
-| `read_from_token` | Boolean | Whether to read from token columns | `true` |
+| `read_from_token` | Boolean | Whether to read from token columns | Opposite of `dual_write` |
 
 **Example:**
 
@@ -47,6 +74,15 @@ class User < ActiveRecord::Base
   dual_write: false,
   read_from_token: true
 end
+
+# Using an array of fields (will use field name uppercase as the PII type)
+class Profile < ActiveRecord::Base
+  include PiiTokenizer::Tokenizable
+  
+  tokenize_pii fields: [:first_name, :last_name, :email],
+              entity_type: 'PROFILE',
+              entity_id: ->(record) { record.id.to_s }
+end
 ```
 
 #### `tokenized_fields`
@@ -58,6 +94,27 @@ Returns an array of the fields configured for tokenization.
 ```ruby
 User.tokenized_fields
 # => [:first_name, :last_name, :email]
+```
+
+#### `token_column_for(field)`
+
+Returns the name of the token column for a given field.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `field` | Symbol | The field name |
+
+**Returns:**
+
+The token column name as a string.
+
+**Example:**
+
+```ruby
+User.token_column_for(:email)
+# => "email_token"
 ```
 
 #### `find_or_create_by(attributes, &block)`
@@ -93,6 +150,25 @@ user = User.find_or_create_by(email: 'john@example.com', role: 'admin')
 puts user.email  # => john@example.com
 
 # But stored securely in the database as a token
+```
+
+#### `preload_decrypted_fields(records, *fields)`
+
+Preloads decrypted values for multiple records in a single API call.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `records` | Array | Records to decrypt fields for |
+| `fields` | Array | The tokenized fields to decrypt |
+
+**Example:**
+
+```ruby
+users = User.where(active: true).to_a
+User.preload_decrypted_fields(users, :email, :first_name)
+users.each { |user| puts user.email }  # No additional API calls
 ```
 
 ### Instance Methods
@@ -172,170 +248,115 @@ user.token_column_name(:first_name)
 # => :first_name_token
 ```
 
-#### `include_decrypted_fields(*fields)`
+#### `field_changed?(field)`
 
-Efficiently decrypts specified fields for a collection of records in a single API call.
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `fields` | Array | The tokenized fields to decrypt |
-
-**Returns:**
-
-An ActiveRecord::Relation that will decrypt the specified fields in batch when executed.
-
-**Example:**
-
-```ruby
-# Instead of N+1 decryption calls
-users = User.where(active: true)
-users.each { |user| puts user.email }  # Makes one API call per record
-
-# Batch decryption - makes a single API call for all records
-users = User.where(active: true).include_decrypted_fields(:email, :first_name)
-users.each { |user| puts user.email }  # No additional API calls
-```
-
-#### `preload_decrypted_fields(records, *fields)`
-
-Preloads decrypted values for multiple records in a single API call.
+Checks if a tokenized field has changed, with Rails version-independent behavior.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `records` | Array | Records to decrypt fields for |
-| `fields` | Array | The tokenized fields to decrypt |
-
-**Example:**
-
-```ruby
-users = User.where(active: true).to_a
-User.preload_decrypted_fields(users, :email, :first_name)
-users.each { |user| puts user.email }  # No additional API calls
-```
-
-#### `save(*args, &block)`
-
-Securely saves a record with tokenized fields, ensuring PII is never stored in plaintext in the database.
-
-For new records, this method:
-1. Stores tokenized field values in memory
-2. Clears original fields if `dual_write` is `false`
-3. Saves the record to get an ID
-4. Uses the in-memory values to encrypt and tokenize the data
-5. Updates the database with only the tokenized values
+| `field` | Symbol | The field to check for changes |
 
 **Returns:**
 
-Boolean indicating whether the save succeeded
+Boolean indicating whether the field has changed.
 
 **Example:**
 
 ```ruby
-user = User.new(email: 'jane@example.com')
-user.save  # Saves record and tokenizes email securely
-# The email can still be accessed via user.email
-# But in the database, only email_token is set
-```
-
-#### `save!(*args, &block)`
-
-Same as `save` but raises an exception if the record is invalid.
-
-**Returns:**
-
-The record itself, if save succeeds
-
-**Raises:**
-
-`ActiveRecord::RecordNotSaved` if record is invalid
-
-**Example:**
-
-```ruby
-user = User.new(email: 'jane@example.com')
-user.save!  # Raises exception if validation fails
+user.first_name = "Jane"
+user.field_changed?(:first_name)  # => true
 ```
 
 ## EncryptionService
 
-The `PiiTokenizer::EncryptionService` handles communication with the external encryption service.
+The `PiiTokenizer::EncryptionService` class handles communication with the external encryption service.
 
-### Class Methods
+### Methods
 
-#### `new(url)`
+#### `encrypt_batch(tokens_data)`
 
-Creates a new EncryptionService instance.
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `url` | String | The URL of the encryption service |
-
-**Example:**
-
-```ruby
-service = PiiTokenizer::EncryptionService.new("https://encryption-service.example.com")
-```
-
-### Instance Methods
-
-#### `encrypt_batch(data)`
-
-Encrypts a batch of data.
+Encrypts multiple values in a batch.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `data` | Array | Array of hashes with entity_type, entity_id, pii_type, and value |
+| `tokens_data` | Array | Array of hashes with values to encrypt |
+
+Each hash in the array should have these keys:
+- `:value` - The value to encrypt
+- `:entity_id` - The entity ID for this value
+- `:entity_type` - The entity type
+- `:field_name` - Name of the field being encrypted
+- `:pii_type` - Type of PII data (e.g., EMAIL, PHONE)
 
 **Returns:**
 
-A hash mapping entity_type:entity_id:pii_type to encrypted tokens.
+Hash mapping request keys to encrypted token values.
 
 **Example:**
 
 ```ruby
-service.encrypt_batch([
-  { entity_type: 'USER', entity_id: '1', pii_type: 'EMAIL', value: 'john@example.com' },
-  { entity_type: 'USER', entity_id: '1', pii_type: 'NAME', value: 'John' }
-])
-# => { 'USER:1:EMAIL' => 'encrypted_token_1', 'USER:1:NAME' => 'encrypted_token_2' }
+tokens_data = [
+  {value: 'John Smith', entity_id: 'user_1', entity_type: 'user_uuid', field_name: 'name', pii_type: 'NAME'},
+  {value: 'john@example.com', entity_id: 'user_1', entity_type: 'user_uuid', field_name: 'email', pii_type: 'EMAIL'}
+]
+result = service.encrypt_batch(tokens_data)
 ```
 
-#### `decrypt_batch(tokens)`
+#### `decrypt_batch(tokens_data)`
 
-Decrypts a batch of tokens.
+Decrypts multiple tokens in a batch.
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `tokens` | Array | Array of token strings to decrypt |
+| `tokens_data` | Array or String | Tokens to decrypt |
+
+Can be:
+- A single token string
+- An array of token strings
+- An array of hashes with `:token`, `:entity_id`, `:entity_type`, and `:pii_type` keys
 
 **Returns:**
 
-A hash mapping token strings to their decrypted values.
+Hash mapping tokens to decrypted values.
 
 **Example:**
 
 ```ruby
-service.decrypt_batch(['encrypted_token_1', 'encrypted_token_2'])
-# => { 'encrypted_token_1' => 'john@example.com', 'encrypted_token_2' => 'John' }
+tokens = ['encrypted_token_1', 'encrypted_token_2']
+result = service.decrypt_batch(tokens)
+```
+
+#### `search_tokens(pii_value)`
+
+Searches for tokens matching a specific PII value.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `pii_value` | String | The PII value to search for |
+
+**Returns:**
+
+Array of matching token values.
+
+**Example:**
+
+```ruby
+tokens = service.search_tokens('john.doe@example.com')
 ```
 
 ## Generators
 
-PiiTokenizer provides generators to help with setting up token columns and indices.
+### `pii_tokenizer:token_columns`
 
-### TokenColumnsGenerator
-
-Generates a migration to add token columns for tokenized fields.
+Generates a migration to add token columns for specified fields.
 
 **Usage:**
 
@@ -349,171 +370,86 @@ rails generate pii_tokenizer:token_columns MODEL_NAME FIELD1 FIELD2 ...
 rails generate pii_tokenizer:token_columns user first_name last_name email
 ```
 
-### TokenIndicesGenerator
+This generates a migration file with:
 
-Generates a migration to add indices to token columns.
-
-**Usage:**
-
-```bash
-rails generate pii_tokenizer:token_indices MODEL_NAME FIELD1 FIELD2 ...
+```ruby
+add_column :users, :first_name_token, :string
+add_column :users, :last_name_token, :string
+add_column :users, :email_token, :string
 ```
+
+## Version Compatibility
+
+PiiTokenizer provides special handling for different Rails versions. See the [Rails Compatibility](rails_compatibility.md) document for details.
+
+### Key Compatibility Methods
+
+#### `rails5_or_newer?`
+
+Checks if the Rails version is 5.0 or newer.
+
+**Returns:**
+
+Boolean indicating whether the Rails version is 5.0 or newer.
 
 **Example:**
 
-```bash
-rails generate pii_tokenizer:token_indices user first_name last_name email
+```ruby
+if rails5_or_newer?
+  # Code for Rails 5+ behavior
+else
+  # Code for Rails 4.x behavior
+end
 ```
 
-## Rake Tasks
+#### `rails4_2?`
 
-PiiTokenizer provides rake tasks for common operations.
+Checks if the Rails version is 4.2.
 
-### Backfill Task
+**Returns:**
 
-Backfills token columns with encrypted values from original columns.
+Boolean indicating whether the Rails version is 4.2.
 
-**Usage:**
+**Example:**
 
-```bash
-rake pii_tokenizer:backfill[MODEL_NAME,BATCH_SIZE]
+```ruby
+if rails4_2?
+  # Rails 4.2 specific code
+end
 ```
+
+#### `active_record_version`
+
+Returns the ActiveRecord version as a string.
+
+**Returns:**
+
+The ActiveRecord version as a string (e.g., "5.2").
+
+**Example:**
+
+```ruby
+version = active_record_version
+# => "5.2"
+```
+
+#### `safe_write_attribute(attribute, value)`
+
+Safely writes an attribute value in a Rails version-independent way.
 
 **Parameters:**
 
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `MODEL_NAME` | String | The name of the model class to backfill | Required |
-| `BATCH_SIZE` | Integer | The number of records to process in each batch | 1000 |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `attribute` | Symbol | The attribute to set |
+| `value` | Object | The value to set |
+
+**Returns:**
+
+The value that was set.
 
 **Example:**
 
-```bash
-rake pii_tokenizer:backfill[User,500]
-```
-
-## Configuration
-
-PiiTokenizer can be configured with an initializer:
-
 ```ruby
-# config/initializers/pii_tokenizer.rb
-PiiTokenizer.configure do |config|
-  config.encryption_service_url = ENV['ENCRYPTION_SERVICE_URL']
-  config.batch_size = 100  # Default batch size for operations
-  config.logger = Rails.logger
-  config.log_level = :debug
-end
-```
-
-**Configuration Options:**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `encryption_service_url` | URL of the encryption service | Required |
-| `batch_size` | Default batch size for operations | 100 |
-| `logger` | Custom logger instance | `nil` (uses STDOUT) |
-| `log_level` | Log level (:debug, :info, :warn, :error, :fatal) | `:info` |
-
-## Error Handling
-
-PiiTokenizer includes comprehensive error handling for all API operations. Here's how to handle common error scenarios:
-
-### Encryption Service Connection Errors
-
-Methods like `encrypt_batch`, `decrypt_batch`, and `search_tokens` can raise errors when they can't connect to the encryption service:
-
-```ruby
-begin
-  # Attempt to encrypt data
-  user.save
-rescue RuntimeError => e
-  if e.message.include?('Failed to connect to encryption service')
-    # Handle connection issues
-    Rails.logger.error("Encryption service unavailable: #{e.message}")
-    # Consider implementing a retry mechanism
-    retry_count ||= 0
-    retry_count += 1
-    retry if retry_count < 3
-  else
-    # Handle other errors
-    raise
-  end
-end
-```
-
-### API Response Errors
-
-Errors can also occur if the encryption service returns an error response:
-
-```ruby
-begin
-  tokens = PiiTokenizer.encryption_service.search_tokens('example@email.com')
-rescue RuntimeError => e
-  if e.message.include?('Encryption service error')
-    status_code = e.message.match(/HTTP (\d+)/)&.[](1)
-    
-    case status_code
-    when '400'
-      # Handle bad request errors
-    when '401', '403'
-      # Handle authentication/authorization errors
-    when '500', '502', '503'
-      # Handle server errors, possibly with retries
-    else
-      # Handle other API errors
-    end
-  else
-    # Handle other runtime errors
-    raise
-  end
-end
-```
-
-### Implementing Resilience
-
-For production systems, consider adding resilience patterns:
-
-```ruby
-# Retry mechanism for transient errors
-def with_retries(max_attempts: 3, base_delay: 1)
-  attempts = 0
-  begin
-    attempts += 1
-    yield
-  rescue RuntimeError => e
-    if e.message.include?('Failed to connect') && attempts < max_attempts
-      # Exponential backoff
-      sleep(base_delay * (2 ** (attempts - 1)))
-      retry
-    else
-      raise
-    end
-  end
-end
-
-# Using the retry mechanism
-with_retries do
-  user = User.find_or_create_by(email: 'example@email.com')
-end
-```
-
-## Logging
-
-PiiTokenizer provides logging for all API calls to the encryption service:
-
-```ruby
-# config/initializers/pii_tokenizer.rb
-PiiTokenizer.configure do |config|
-  # Use Rails logger instead of default STDOUT logger
-  config.logger = Rails.logger
-  
-  # Set to debug for more verbose output
-  config.log_level = :debug
-end
-```
-
-The logged information includes:
-- Request method, URL, and sanitized payload (sensitive data is redacted)
-- Response status code and sanitized response body
-- Error details when requests fail 
+safe_write_attribute(:email_token, "encrypted_value")
+``` 
