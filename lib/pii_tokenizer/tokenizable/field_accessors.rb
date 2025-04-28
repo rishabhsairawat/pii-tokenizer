@@ -108,8 +108,9 @@ module PiiTokenizer
               send(:attribute_will_change!, field.to_s) if respond_to?(:attribute_will_change!)
               safe_write_attribute(field, value)
             else
-              # In non-dual-write mode, mark only the token column for update
-              send(:attribute_will_change!, "#{field}_token") if respond_to?(:attribute_will_change!)
+              # In non-dual-write mode, only store the original value and mark token column
+              # Do not attempt to write to the original field
+              instance_variable_set("@original_#{field}", value)
             end
             
             # Mark the token column as changed for both dual_write modes

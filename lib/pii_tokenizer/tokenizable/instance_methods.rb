@@ -377,7 +377,9 @@ module PiiTokenizer
             safe_write_attribute(field.to_s, nil)
             state[:pending_db_updates][field.to_s] = nil
           else
-            safe_write_attribute(field.to_s, nil)
+            # When dual_write is off, we don't write to the original field
+            # Just store nil in the instance variable
+            instance_variable_set("@original_#{field_sym}", nil)
           end
           
           # Update cache and tracking
@@ -437,8 +439,9 @@ module PiiTokenizer
               state[:pending_db_updates][field] = original_value if original_value.present?
             end
           else
-            safe_write_attribute(field, nil)
-            state[:pending_db_updates][field] = nil
+            # When dual_write is off, we don't write to the original field
+            # Just store the value in the instance variable for decryption
+            instance_variable_set("@original_#{field_sym}", value)
           end
 
           # Update cache and mark as changed
