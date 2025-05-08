@@ -207,5 +207,34 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
         expect(callbacks).to include('process_after_save_tokenization')
       end
     end
+
+    context 'empty string handling' do
+      it 'correctly reads empty string from token column when read_from_token is true' do
+        # Configure Log with read_from_token=true
+        Log.tokenize_pii(
+          fields: { message: 'MESSAGE' },
+          entity_type: 'log',
+          entity_id: ->(record) { "Log_#{record.id}" },
+          dual_write: true,
+          read_from_token: true
+        )
+
+        # Create a log with empty string
+        log = Log.create!(message: '')
+
+        # Verify token column has empty string
+        expect(log.message_token).to eq('')
+
+        # Reload from database to ensure we're reading from DB
+        log.reload
+
+        # Verify that reading the field returns empty string
+        expect(log.message).to eq('')
+        expect(log.message_token).to eq('')
+
+        # Verify original column is '' (since dual_write=true)
+        expect(log.read_attribute(:message)).to eq('')
+      end
+    end
   end
 end
