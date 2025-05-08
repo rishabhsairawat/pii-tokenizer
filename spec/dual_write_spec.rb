@@ -15,7 +15,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
         email: 'EMAIL'
       },
       entity_type: 'user_uuid',
-      entity_id: ->(record) { "#{record.id}" },
+      entity_id: ->(record) { record.id.to_s },
       dual_write: false,
       read_from_token: true
     )
@@ -61,7 +61,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
         email: 'EMAIL'
       },
       entity_type: 'user_uuid',
-      entity_id: ->(record) { "#{record.id}" },
+      entity_id: ->(record) { record.id.to_s },
       dual_write: false,
       read_from_token: true
     )
@@ -77,7 +77,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           email: 'EMAIL'
         },
         entity_type: 'user_uuid',
-        entity_id: ->(record) { "#{record.id}" },
+        entity_id: ->(record) { record.id.to_s },
         dual_write: true,
         read_from_token: false
       )
@@ -196,6 +196,29 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       expect(user.first_name_token).to be_nil
     end
 
+    it 'updates both original and token columns when a field is set to an empty string' do
+      # Create a user with some data
+      user = User.create!(first_name: 'John', last_name: 'Doe')
+
+      # Verify initial state
+      expect(user.first_name).to eq('John')
+      expect(user.first_name_token).to eq('token_for_John')
+      expect(user.read_attribute(:first_name)).to eq('John')
+
+      # Set field to empty string
+      user.first_name = ''
+      user.save!
+
+      # Verify that both the original and token columns were updated
+      user.reload
+      expect(user.first_name).to eq('')
+      expect(user.first_name_token).to eq('')
+      expect(user.read_attribute(:first_name)).to eq('')
+
+      # Make sure the accessor correctly returns empty string
+      expect(user.first_name).to eq('')
+    end
+
     it 'performs database write operation in 2 steps (INSERT + UPDATE) when creating a record and entity_id is not present beforehand' do
       # Track SQL queries
       sql_queries = []
@@ -237,7 +260,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           email: 'EMAIL'
         },
         entity_type: 'user_uuid',
-        entity_id: ->(record) { "#{record.id}" },
+        entity_id: ->(record) { record.id.to_s },
         dual_write: false,
         read_from_token: true
       )
@@ -422,6 +445,38 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       expect(user.first_name).to be_nil
       expect(user.first_name_token).to be_nil
     end
+
+    it 'only updates token column when setting a field to empty string with dual_write disabled' do
+      # Create a user with some data
+      user = User.create!(first_name: 'John', last_name: 'Doe')
+
+      # Set up to track SQL statements
+      sql_statements = []
+
+      # Intercept SQL execution to verify the update statement
+      allow(User.connection).to receive(:exec_update).and_wrap_original do |original, sql, *args|
+        sql_statements << sql
+        original.call(sql, *args)
+      end
+
+      # First verify that the token is set
+      expect(user.first_name_token).to eq('token_for_John')
+
+      # Set field to empty string
+      user.first_name = ''
+      user.save!
+
+      # Verify we don't see the original column in the update SQL
+      update_sql = sql_statements.find { |sql| sql.include?('UPDATE') && sql.include?('first_name_token') }
+      expect(update_sql).to include('first_name_token')
+      expect(update_sql).not_to include('first_name =')
+
+      # Verify that the token is set to empty string
+      user.reload
+      expect(user.first_name_token).to eq('')
+      expect(user.read_attribute(:first_name)).to be_nil
+      expect(user.first_name).to eq('')
+    end
   end
 
   describe 'entity_id availability behavior' do
@@ -434,7 +489,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           email: 'EMAIL'
         },
         entity_type: 'user_uuid',
-        entity_id: ->(record) { "pre_available_id" }, # entity_id doesn't depend on record.id
+        entity_id: ->(_record) { 'pre_available_id' }, # entity_id doesn't depend on record.id
         dual_write: true,
         read_from_token: false
       )
@@ -477,7 +532,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
           email: 'EMAIL'
         },
         entity_type: 'user_uuid',
-        entity_id: ->(record) { "#{record.id}" }, # entity_id depends on record.id being available
+        entity_id: ->(record) { record.id.to_s }, # entity_id depends on record.id being available
         dual_write: true,
         read_from_token: false
       )

@@ -55,4 +55,4 @@ module PiiTokenizer
     # Make our extension module available as a constant
     DecryptedFieldsExtension = BatchOperations::DecryptedFieldsExtension
   end
-end 
+end

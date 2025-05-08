@@ -15,7 +15,7 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
         email: 'EMAIL'
       },
       entity_type: 'user_uuid',
-      entity_id: ->(record) { "#{record.id}" },
+      entity_id: ->(record) { record.id.to_s },
       dual_write: false,
       read_from_token: true
     )
@@ -31,7 +31,7 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
           email: 'EMAIL'
         },
         entity_type: 'user_uuid',
-        entity_id: ->(record) { "fixed_id_123" }, # entity_id is constant, not dependent on record.id
+        entity_id: ->(_record) { 'fixed_id_123' }, # entity_id is constant, not dependent on record.id
         dual_write: true,
         read_from_token: false
       )
@@ -77,10 +77,10 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
       # and included in the INSERT query
       insert_queries = sql_queries.select { |sql| sql.include?('INSERT') }
       update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
-      
+
       expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but got #{insert_queries.size}"
       expect(update_queries.size).to eq(0), "Expected 0 UPDATE queries but got #{update_queries.size}"
-      
+
       # Clean up subscription
       ActiveSupport::Notifications.unsubscribe('sql.active_record')
     end
@@ -96,7 +96,7 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
           email: 'EMAIL'
         },
         entity_type: 'user_uuid',
-        entity_id: ->(record) { "#{record.id}" }, # entity_id depends on record.id
+        entity_id: ->(record) { record.id.to_s }, # entity_id depends on record.id
         dual_write: true,
         read_from_token: false
       )
@@ -143,10 +143,10 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
       # 2. UPDATE to add the tokens
       insert_queries = sql_queries.select { |sql| sql.include?('INSERT') }
       update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
-      
+
       expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but got #{insert_queries.size}"
       expect(update_queries.size).to eq(1), "Expected 1 UPDATE query but got #{update_queries.size}"
-      
+
       # Clean up subscription
       ActiveSupport::Notifications.unsubscribe('sql.active_record')
     end
@@ -163,7 +163,7 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
             email: 'EMAIL'
           },
           entity_type: 'user_uuid',
-          entity_id: ->(record) { "fixed_id_456" }, # entity_id is constant, not dependent on record.id
+          entity_id: ->(_record) { 'fixed_id_456' }, # entity_id is constant, not dependent on record.id
           dual_write: false,
           read_from_token: true
         )
@@ -216,10 +216,10 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
         # Since entity_id is pre-available, should be a single INSERT query
         insert_queries = sql_queries.select { |sql| sql.include?('INSERT') }
         update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
-        
+
         expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but got #{insert_queries.size}"
         expect(update_queries.size).to eq(0), "Expected 0 UPDATE queries but got #{update_queries.size}"
-        
+
         # Clean up subscription
         ActiveSupport::Notifications.unsubscribe('sql.active_record')
       end
@@ -235,7 +235,7 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
             email: 'EMAIL'
           },
           entity_type: 'user_uuid',
-          entity_id: ->(record) { "#{record.id}" }, # entity_id depends on record.id
+          entity_id: ->(record) { record.id.to_s }, # entity_id depends on record.id
           dual_write: false,
           read_from_token: true
         )
@@ -290,10 +290,10 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
         # 2. UPDATE to add the tokens
         insert_queries = sql_queries.select { |sql| sql.include?('INSERT') }
         update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
-        
+
         expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but got #{insert_queries.size}"
         expect(update_queries.size).to eq(1), "Expected 1 UPDATE query but got #{update_queries.size}"
-        
+
         # Clean up subscription
         ActiveSupport::Notifications.unsubscribe('sql.active_record')
       end

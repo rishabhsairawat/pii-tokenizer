@@ -20,16 +20,16 @@ module PiiTokenizer
       def field_changed?(field)
         field_str = field.to_s
         token_column = "#{field_str}_token"
-        
+
         changes_hash = if rails5_or_newer?
-                        respond_to?(:previous_changes) ? previous_changes : {}
-                      else
-                        respond_to?(:changes) ? changes : {}
+                         respond_to?(:previous_changes) ? previous_changes : {}
+                       else
+                         respond_to?(:changes) ? changes : {}
                       end
-        
+
         # Check if either the field or its token column has changed
         changes_hash.key?(field_str) || changes_hash.key?(token_column) ||
-          instance_variable_defined?("@original_#{field}") || 
+          instance_variable_defined?("@original_#{field}") ||
           field_set_to_nil?(field.to_sym)
       end
 
@@ -58,4 +58,4 @@ module PiiTokenizer
       end
     end
   end
-end 
+end

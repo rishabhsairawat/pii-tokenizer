@@ -41,7 +41,7 @@ module PiiTokenizer
             # Get the token column value
             token_column = token_column_for(field)
             token_value = read_attribute(token_column)
-            
+
             # Get the original field value
             field_value = read_attribute(field.to_s)
 
@@ -71,10 +71,10 @@ module PiiTokenizer
             if value.nil?
               # Store a flag indicating this field was explicitly set to nil
               instance_variable_set("@#{field}_set_to_nil", true)
-              
+
               # Force this field to be marked as changed
               token_column = token_column_for(field)
-              
+
               # Mark columns as changed so ActiveRecord includes them in the UPDATE
               if self.class.dual_write_enabled
                 # In dual_write mode, we want to update both columns in one transaction
@@ -85,23 +85,23 @@ module PiiTokenizer
                 # and not mark the original field for update
                 instance_variable_set("@original_#{field}", nil)
               end
-              
+
               # Always mark the token column for update in both Rails 4 and 5
               send(:attribute_will_change!, token_column) if respond_to?(:attribute_will_change!)
-              
+
               # Set the token column to nil immediately in memory
               safe_write_attribute(token_column, nil)
-              
+
               # Store nil in the decryption cache to avoid unnecessary decrypt calls
               field_decryption_cache[field.to_sym] = nil
-              
+
               return nil
             end
-            
+
             # For non-nil values, continue with normal flow
             # Store the unencrypted value in the object
             instance_variable_set("@original_#{field}", value)
-            
+
             # Also need to set the attribute for the record to be dirty
             if self.class.dual_write_enabled
               # In dual-write mode, mark the original field for update and set its value
@@ -112,13 +112,13 @@ module PiiTokenizer
               # Do not attempt to write to the original field
               instance_variable_set("@original_#{field}", value)
             end
-            
+
             # Mark the token column as changed for both dual_write modes
             send(:attribute_will_change!, "#{field}_token") if respond_to?(:attribute_will_change!)
-            
+
             # Cache the value
             field_decryption_cache[field.to_sym] = value
-            
+
             # Return the value
             value
           end
@@ -126,4 +126,4 @@ module PiiTokenizer
       end
     end
   end
-end 
+end

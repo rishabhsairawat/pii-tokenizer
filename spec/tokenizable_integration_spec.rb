@@ -501,10 +501,10 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_tokenizable_models do
       # Define the test model
       class TestUser < ActiveRecord::Base
         include PiiTokenizer::Tokenizable
-        tokenize_pii fields: [:email, :phone],
-                    entity_type: 'user_uuid',
-                    entity_id: ->(user) { "#{user.id}" },
-                    dual_write: false
+        tokenize_pii fields: %i[email phone],
+                     entity_type: 'user_uuid',
+                     entity_id: ->(user) { user.id.to_s },
+                     dual_write: false
       end
     end
 
@@ -513,19 +513,19 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_tokenizable_models do
       ActiveRecord::Migration.drop_table :test_users
     end
 
-    it 'should create record with tokenized fields when original column is dropped' do
+    it 'creates record with tokenized fields when original column is dropped' do
       # Create a record with tokenized fields
-      user = TestUser.create(email: "test@example.com", phone: "1234567890")
-      
+      user = TestUser.create(email: 'test@example.com', phone: '1234567890')
+
       # Verify the record was created successfully
       expect(user).to be_persisted
-      
+
       # Verify the token columns were populated
       expect(user.email_token).to be_present
       expect(user.phone_token).to be_present
-      
+
       # Verify we can find the record by the tokenized fields
-      found_user = TestUser.find_by(email: "test@example.com")
+      found_user = TestUser.find_by(email: 'test@example.com')
       expect(found_user.id).to eq(user.id)
     end
   end

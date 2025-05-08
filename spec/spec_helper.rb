@@ -84,7 +84,7 @@ class User < ActiveRecord::Base
     email: 'EMAIL'
   },
                entity_type: 'user_uuid',
-               entity_id: ->(record) { "#{record.id}" },
+               entity_id: ->(record) { record.id.to_s },
                dual_write: false,
                read_from_token: true
 end
