@@ -513,6 +513,46 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       expect(user.read_attribute(:first_name)).to be_nil
       expect(user.read_attribute(:last_name)).to be_nil
     end
+
+    it 'correctly handles reading empty strings from token columns when read_from_token is true' do
+      # Create a user with some data
+      user = User.create!(first_name: 'John', last_name: 'Doe')
+
+      # Set both fields to empty strings
+      user.first_name = ''
+      user.last_name = ''
+      user.save!
+
+      # Reload to ensure we're reading from database
+      user.reload
+
+      # Verify token columns have empty strings
+      expect(user.first_name_token).to eq('')
+      expect(user.last_name_token).to eq('')
+
+      # Verify original columns are nil
+      expect(user.read_attribute(:first_name)).to be_nil
+      expect(user.read_attribute(:last_name)).to be_nil
+
+      # Verify accessors return empty strings (reading from tokens)
+      expect(user.first_name).to eq('')
+      expect(user.last_name).to eq('')
+
+      # Update one field to a non-empty string
+      user.first_name = 'Jane'
+      user.save!
+
+      # Reload again
+      user.reload
+
+      # Verify mixed state of empty and non-empty strings
+      expect(user.first_name).to eq('Jane')
+      expect(user.last_name).to eq('')
+      expect(user.first_name_token).to eq('token_for_Jane')
+      expect(user.last_name_token).to eq('')
+      expect(user.read_attribute(:first_name)).to be_nil
+      expect(user.read_attribute(:last_name)).to be_nil
+    end
   end
 
   describe 'entity_id availability behavior' do

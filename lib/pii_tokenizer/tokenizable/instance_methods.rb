@@ -63,7 +63,8 @@ module PiiTokenizer
         # Get and decrypt value
         token_column = token_column_for(field)
         encrypted_value = get_encrypted_value(field_sym, token_column)
-        return nil if encrypted_value.blank?
+
+        return encrypted_value if encrypted_value.blank?
 
         result = PiiTokenizer.encryption_service.decrypt_batch([encrypted_value])
         decrypted_value = result[encrypted_value] || read_attribute(field)
