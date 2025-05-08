@@ -46,17 +46,13 @@ module PiiTokenizer
             field_value = read_attribute(field.to_s)
 
             # Decide which value to use based on settings
-            if self.class.read_from_token_column && token_value.present?
-              # When reading from token is enabled and we have a token, decrypt it
+            if self.class.read_from_token_column && !token_value.nil?
+              # When reading from token is enabled and we have a token (including empty string), decrypt it
               decrypted = decrypt_field(field)
               return decrypted
             elsif !self.class.read_from_token_column && field_value.present?
               # When not reading from token and original field has data, use that
               return field_value
-            elsif token_value.present?
-              # Fallback: If we have a token but no field value, decrypt it
-              decrypted = decrypt_field(field)
-              return decrypted
             else
               # Last resort: return the original field value (might be nil)
               return field_value
