@@ -232,7 +232,7 @@ module PiiTokenizer
       end
 
       def get_encrypted_value(field, token_column)
-        if self.class.read_from_token_column && respond_to?(token_column) && self[token_column].present?
+        if self.class.read_from_token_column && respond_to?(token_column) && !self[token_column].nil?
           self[token_column]
         else
           read_attribute(field)
