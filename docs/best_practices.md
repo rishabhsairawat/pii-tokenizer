@@ -34,6 +34,87 @@ This document outlines recommended practices for using PiiTokenizer effectively 
 - **Keep sensitive data encrypted end-to-end** in your application
 - **Double-check all data export functionality** to ensure PII isn't accidentally exported
 
+## Reliable Entity ID Strategies
+
+The PII Tokenizer requires a unique entity identifier for each record that must be available during the tokenization process. This is a critical requirement for the system to work properly.
+
+### Entity ID Best Practices
+
+- **Always ensure entity_id is available** during model save operations, even for new records
+- **Use UUIDs or other pre-assigned identifiers** when possible instead of database-generated IDs
+- **Consider composite IDs** that remain stable throughout a record's lifecycle
+- **Never return nil or empty string** from your entity_id proc
+
+### Example Entity ID Strategies
+
+1. **Using UUID as primary key**:
+   ```ruby
+   class User < ActiveRecord::Base
+     include PiiTokenizer::Tokenizable
+     
+     # Generate UUID before validation
+     before_validation :assign_uuid, on: :create
+     
+     tokenize_pii fields: [:email, :phone],
+                 entity_type: 'USER',
+                 entity_id: ->(user) { user.uuid }
+                 
+     private
+     
+     def assign_uuid
+       self.uuid ||= SecureRandom.uuid
+     end
+   end
+   ```
+
+2. **Using business identifiers**:
+   ```ruby
+   class Customer < ActiveRecord::Base
+     include PiiTokenizer::Tokenizable
+     
+     # Generate customer number before save
+     before_validation :assign_customer_number, on: :create
+     
+     tokenize_pii fields: [:name, :address],
+                 entity_type: 'CUSTOMER',
+                 entity_id: ->(customer) { customer.customer_number }
+                 
+     private
+     
+     def assign_customer_number
+       self.customer_number ||= "CUST-#{SecureRandom.hex(6).upcase}"
+     end
+   end
+   ```
+
+3. **Using composite identifiers when database ID is required**:
+   ```ruby
+   class Order < ActiveRecord::Base
+     include PiiTokenizer::Tokenizable
+     
+     belongs_to :user
+     
+     tokenize_pii fields: [:shipping_address, :billing_address],
+                 entity_type: 'ORDER',
+                 entity_id: ->(order) { 
+                   if order.id.present?
+                     "order-#{order.id}"
+                   else
+                     "order-temp-#{order.user_id}-#{Time.now.to_i}"
+                   end
+                 }
+   end
+   ```
+
+### Troubleshooting Entity ID Issues
+
+If you're experiencing issues with tokenization, check:
+
+- **Verify your entity_id proc returns a value** for both new and existing records
+- **Inspect the actual value returned** by your entity_id proc at runtime
+- **Ensure entity_id values are consistent** across save operations for the same record
+- **Check for nil or empty values** that might be returned in edge cases
+
 ## Performance Optimization
 
 ### Batch Processing

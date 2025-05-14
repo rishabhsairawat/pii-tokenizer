@@ -18,27 +18,38 @@ module PiiTokenizer
   # information (PII) in ActiveRecord models. It supports both Rails 4 and Rails 5+
   # with specialized handling for each version's differences.
   #
-  # Key Rails version differences handled:
-  # - In Rails 5+, `previous_changes` contains changes after save, while in Rails 4, `changes` has this data
-  # - Method visibility differences (private vs public) between Rails versions
-  # - Different method implementations for record updates and inserts
+  # Key features:
+  # - Transparent tokenization of PII fields
+  # - Support for dual-write mode during migrations
+  # - Efficient batch encryption/decryption
+  # - Integration with ActiveRecord callbacks
+  # - Support for searching by tokenized fields
   #
-  # The module ensures that tokenization works correctly regardless of Rails version by:
-  # - Using version detection helpers (rails5_or_newer?)
-  # - Providing compatibility layers (field_changed?, active_changes)
-  # - Implementing special method handling for Rails 4 compatibility (method_missing)
+  # Implementation requires:
+  # - Each tokenized field must have a corresponding _token column in the database
+  # - An entity_id proc that reliably provides a unique identifier for each record
+  # - An entity_type to identify the type of entity being tokenized
   #
-  # @example Basic usage
+  # @example Basic usage with guaranteed entity_id
   #   class User < ActiveRecord::Base
   #     include PiiTokenizer::Tokenizable
   #
   #     tokenize_pii fields: [:first_name, :last_name, :email],
-  #                 entity_type: 'user_uuid',
-  #                 entity_id: ->(user) { "user_#{user.id}" }
+  #                 entity_type: 'user',
+  #                 entity_id: ->(user) { "user_#{user.uuid}" }
   #   end
   #
-  # @note Each tokenized field should have a corresponding _token column in the database
-  #       (e.g., first_name should have first_name_token column)
+  # @example With dual-write for migration
+  #   class Customer < ActiveRecord::Base
+  #     include PiiTokenizer::Tokenizable
+  #
+  #     tokenize_pii fields: [:name, :address, :phone],
+  #                 entity_type: 'customer',
+  #                 entity_id: ->(customer) { "customer_#{customer.external_id}" },
+  #                 dual_write: true
+  #   end
+  #
+  # @note The entity_id proc must always return a valid entity_id string
   module Tokenizable
     extend ActiveSupport::Concern
 

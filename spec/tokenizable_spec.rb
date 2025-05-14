@@ -260,19 +260,22 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
     #   expect(written_attributes['email_token']).to eq('token_for_jane.smith@example.com')
     # end
 
-    it 'performs after_save tokenization for just-saved records with entity_id' do
-      # Instead of using complex mocks, we'll test with a real ActiveRecord object
-      # that has a simpler configuration
+    it 'ensures entity_id is used directly without blank? checks' do
+      # Instead of testing the removed process_after_save_tokenization method,
+      # we'll verify that entity_id is used directly without availability checks
 
       # Create a user with initial data
       user = User.new(id: 5225, first_name: 'Jane', last_name: 'Smith', email: 'jane.smith@example.com')
 
-      # Ensure the user looks like a newly saved record
+      # Set up the user as a persisted record
       allow(user).to receive(:persisted?).and_return(true)
-      allow(user).to receive(:previous_changes).and_return({ 'id' => [nil, 5225] })
+      allow(user).to receive(:new_record?).and_return(false)
 
-      # Set up the encrypt_batch stub to return tokens
-      allow(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+      # Set up the encrypt_batch stub to return tokens and verify entity_id is passed
+      expect(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+        # Verify entity_id is used directly without blank? checks
+        expect(tokens_data.first[:entity_id]).to eq('5225')
+
         # Return tokens for the provided data
         result = {}
         tokens_data.each do |data|
@@ -293,8 +296,8 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
         token_values[attr.to_s] = value
       end
 
-      # Call the after_save tokenization method
-      user.send(:process_after_save_tokenization)
+      # Call encrypt_pii_fields directly
+      user.send(:encrypt_pii_fields)
 
       # Verify tokens were created
       expect(token_values).to include(
@@ -353,6 +356,41 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
       expect(user.first_name_token).to be_nil
       expect(user.last_name_token).to be_nil
       expect(user.email_token).to be_nil
+    end
+  end
+
+  describe 'internal state tracking' do
+    include_context 'tokenization test helpers'
+
+    # Test is no longer applicable after tokenization state tracking refactor
+    it 'properly encrypts fields without state tracking' do
+      user = User.new(id: 1, first_name: 'Jane', last_name: 'Smith')
+
+      # Set up the encrypt_batch stub to return tokens
+      expect(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+        # Return tokens for the provided data
+        result = {}
+        tokens_data.each do |data|
+          key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{data[:pii_type]}:#{data[:value]}"
+          result[key] = "token_for_#{data[:value]}"
+        end
+        result
+      end
+
+      # Allow write_attribute to track token values
+      token_values = {}
+      allow(user).to receive(:safe_write_attribute) do |attr, value|
+        token_values[attr.to_s] = value
+      end
+
+      # Call encrypt_pii_fields directly
+      user.send(:encrypt_pii_fields)
+
+      # Verify tokens were created without needing state tracking
+      expect(token_values).to include(
+        'first_name_token' => 'token_for_Jane',
+        'last_name_token' => 'token_for_Smith'
+      )
     end
   end
 end

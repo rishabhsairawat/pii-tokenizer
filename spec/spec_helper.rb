@@ -40,7 +40,7 @@ require_relative 'support/database_setup'
 
 # Add a test implementation of callback methods
 module CallbackMethods
-  def before_save(method_name)
+  def before_save(method_name, _options = {})
     define_method(:run_before_save) do
       send(method_name)
     end

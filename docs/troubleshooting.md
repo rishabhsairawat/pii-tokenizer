@@ -2,6 +2,16 @@
 
 This guide helps you diagnose and resolve common issues when working with PiiTokenizer.
 
+## Table of Contents
+
+- [Connection Issues](#connection-issues)
+- [Tokenization Problems](#tokenization-problems)
+- [Entity ID Issues](#entity-id-issues)
+- [Search and Query Issues](#search-and-query-issues)
+- [Performance Issues](#performance-issues)
+- [Rails Version Compatibility](#rails-version-compatibility)
+- [Debugging Tips](#debugging-tips)
+
 ## Common Issues and Solutions
 
 ### Missing Token Columns
@@ -397,3 +407,81 @@ If you continue to experience issues after trying these troubleshooting steps:
 - [Data Migration Guide](data_migration_guide.md): For migration-specific issues
 - [API Reference](api_reference.md): For detailed method documentation
 - [Best Practices](best_practices.md): For recommendations to avoid common issues 
+
+## Entity ID Issues
+
+### Missing or Invalid Entity ID
+
+**Symptoms:**
+- Token columns are empty or contain incorrect values
+- Errors like "entity_id cannot be nil" or "entity_id is required"
+- Tokenization works inconsistently across records
+
+**Possible Causes:**
+- The entity_id proc returns nil or an empty string
+- The entity_id is not available during the save process (e.g., when using database-generated IDs for new records)
+- Inconsistent entity_id values between save operations
+
+**Solutions:**
+
+1. **Ensure entity_id is always available:**
+   ```ruby
+   # BAD - may return nil for new records
+   entity_id: ->(user) { user.id&.to_s }
+   
+   # GOOD - ensures entity_id is always available
+   entity_id: ->(user) { 
+     user.id.present? ? "user-#{user.id}" : "user-temp-#{SecureRandom.uuid}"
+   }
+   ```
+
+2. **Use pre-assigned identifiers:**
+   ```ruby
+   class User < ActiveRecord::Base
+     before_validation :assign_uuid, on: :create
+     
+     tokenize_pii fields: [:email],
+                 entity_type: 'USER',
+                 entity_id: ->(user) { user.uuid }
+                 
+     private
+     
+     def assign_uuid
+       self.uuid ||= SecureRandom.uuid
+     end
+   end
+   ```
+
+3. **Add debugging to verify entity_id values:**
+   ```ruby
+   # Temporary debugging
+   entity_id: ->(user) {
+     value = user.id.to_s
+     Rails.logger.debug "Entity ID for user: #{value.inspect}"
+     value
+   }
+   ```
+
+4. **Verify consistency in records:**
+   ```ruby
+   User.find_each do |user|
+     puts "User #{user.id}: entity_id = #{user.send(:entity_id).inspect}"
+   end
+   ```
+
+### Changing Entity ID Values
+
+**Symptoms:**
+- Unable to decrypt previously tokenized data
+- Tokenized values change unexpectedly between operations
+
+**Possible Causes:**
+- The entity_id proc returns different values for the same record
+- Logic change in entity_id calculation
+
+**Solutions:**
+1. Ensure your entity_id proc returns consistent values for the same record
+2. If you need to change entity_id logic, plan a data migration strategy
+3. Consider using database-stored UUIDs or other persistent identifiers
+
+## Search and Query Issues 

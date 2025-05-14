@@ -167,31 +167,29 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       # Create a user with some data
       user = User.create!(first_name: 'John', last_name: 'Doe')
 
-      # Set up to track SQL updates - use a counter that increments on update_all calls
-      # which is what the tokenization process uses for the second update
-      update_all_count = 0
-
-      allow(User).to receive(:unscoped).and_return(User)
-      allow(User).to receive(:where).and_return(User)
-      allow(User).to receive(:update_all) do |*_args|
-        update_all_count += 1
-        {} # Return empty hash to avoid actual DB updates in test
+      # Set up to track SQL updates
+      sql_queries = []
+      ActiveSupport::Notifications.subscribe('sql.active_record') do |_, _, _, _, payload|
+        # Skip schema queries and transaction statements
+        unless payload[:sql].match?(/SCHEMA|sqlite_master|BEGIN|COMMIT|SAVEPOINT/)
+          sql_queries << payload[:sql]
+        end
       end
 
       # Set field to nil
       user.first_name = nil
       user.save!
 
-      # In the updated code, for dual_write=true mode with setting fields to nil,
-      # we shouldn't see any secondary update_all calls since everything should
-      # be included in the main ActiveRecord transaction
-      expect(update_all_count).to eq(0)
+      # In the updated code, we should have a single UPDATE operation
+      # for setting fields to nil (not using update_all anymore)
+      update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
+      expect(update_queries.size).to eq(1), "Expected 1 UPDATE query but found #{update_queries.size}: #{update_queries.inspect}"
 
-      # Manually clear the fields to simulate the update
-      user.instance_variable_set(:@first_name, nil)
-      user.instance_variable_set(:@first_name_token, nil)
+      # Clean up subscription
+      ActiveSupport::Notifications.unsubscribe('sql.active_record')
 
-      # Verify field values
+      # Verify field values after reload
+      user.reload
       expect(user.first_name).to be_nil
       expect(user.first_name_token).to be_nil
     end
@@ -219,7 +217,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       expect(user.first_name).to eq('')
     end
 
-    it 'performs database write operation in 2 steps (INSERT + UPDATE) when creating a record and entity_id is not present beforehand' do
+    it 'performs database write operation in a single step (INSERT only) when creating a record' do
       # Track SQL queries
       sql_queries = []
       ActiveSupport::Notifications.subscribe('sql.active_record') do |_, _, _, _, payload|
@@ -237,7 +235,7 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
 
       expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but found #{insert_queries.size}"
-      expect(update_queries.size).to eq(1), "Expected 0 UPDATE queries but found #{update_queries.size}: #{update_queries.inspect}"
+      expect(update_queries.size).to eq(0), "Expected 0 UPDATE queries but found #{update_queries.size}: #{update_queries.inspect}"
 
       # Verify that the tokens were correctly saved in the initial INSERT
       user.reload
@@ -552,94 +550,6 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       expect(user.last_name_token).to eq('')
       expect(user.read_attribute(:first_name)).to be_nil
       expect(user.read_attribute(:last_name)).to be_nil
-    end
-  end
-
-  describe 'entity_id availability behavior' do
-    it 'performs only a single database write operation (INSERT) when entity_id is available before save' do
-      # Configure User model with pre-available entity_id
-      User.tokenize_pii(
-        fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
-        },
-        entity_type: 'user_uuid',
-        entity_id: ->(_record) { 'pre_available_id' }, # entity_id doesn't depend on record.id
-        dual_write: true,
-        read_from_token: false
-      )
-
-      # Track SQL queries
-      sql_queries = []
-      ActiveSupport::Notifications.subscribe('sql.active_record') do |_, _, _, _, payload|
-        # Skip schema queries and transaction statements
-        unless payload[:sql].match?(/SCHEMA|sqlite_master|BEGIN|COMMIT|SAVEPOINT/)
-          sql_queries << payload[:sql]
-        end
-      end
-
-      # Create a new record - entity_id is available immediately
-      user = User.create!(first_name: 'John', last_name: 'Doe', email: 'john@example.com')
-
-      # There should be only one INSERT query and no UPDATE queries
-      insert_queries = sql_queries.select { |sql| sql.include?('INSERT') }
-      update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
-
-      expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but found #{insert_queries.size}"
-      expect(update_queries.size).to eq(0), "Expected 0 UPDATE queries but found #{update_queries.size}: #{update_queries.inspect}"
-
-      # Verify that the tokens were correctly saved in the initial INSERT
-      user.reload
-      expect(user.first_name_token).to eq('token_for_John')
-      expect(user.last_name_token).to eq('token_for_Doe')
-      expect(user.email_token).to eq('token_for_john@example.com')
-
-      # Clean up subscription
-      ActiveSupport::Notifications.unsubscribe('sql.active_record')
-    end
-
-    it 'requires two database operations (INSERT + UPDATE) when entity_id depends on record.id' do
-      # Configure User model where entity_id depends on the record's ID
-      User.tokenize_pii(
-        fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
-        },
-        entity_type: 'user_uuid',
-        entity_id: ->(record) { record.id.to_s }, # entity_id depends on record.id being available
-        dual_write: true,
-        read_from_token: false
-      )
-
-      # Track SQL queries
-      sql_queries = []
-      ActiveSupport::Notifications.subscribe('sql.active_record') do |_, _, _, _, payload|
-        # Skip schema queries and transaction statements
-        unless payload[:sql].match?(/SCHEMA|sqlite_master|BEGIN|COMMIT|SAVEPOINT/)
-          sql_queries << payload[:sql]
-        end
-      end
-
-      # Create a new record - entity_id depends on the ID which is only available after INSERT
-      user = User.create!(first_name: 'John', last_name: 'Doe', email: 'john@example.com')
-
-      # There should be one INSERT followed by one UPDATE
-      insert_queries = sql_queries.select { |sql| sql.include?('INSERT') }
-      update_queries = sql_queries.select { |sql| sql.include?('UPDATE') }
-
-      expect(insert_queries.size).to eq(1), "Expected 1 INSERT query but found #{insert_queries.size}"
-      expect(update_queries.size).to eq(1), "Expected 1 UPDATE query but found #{update_queries.size}: #{update_queries.inspect}"
-
-      # Verify that the tokens were correctly saved after both operations
-      user.reload
-      expect(user.first_name_token).to eq('token_for_John')
-      expect(user.last_name_token).to eq('token_for_Doe')
-      expect(user.email_token).to eq('token_for_john@example.com')
-
-      # Clean up subscription
-      ActiveSupport::Notifications.unsubscribe('sql.active_record')
     end
   end
 

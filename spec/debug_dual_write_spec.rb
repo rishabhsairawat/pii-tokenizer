@@ -137,13 +137,12 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
         expect(user_from_db.read_attribute(:last_name)).to eq('Smith')
         expect(user_from_db.read_attribute(:last_name_token)).to eq('token_for_Smith')
 
-        # Verify that UPDATE SQL was executed after the INSERT
+        # With our simplified approach, all tokenization happens in one step (INSERT)
         insert_index = @sql_queries.find_index { |sql| sql.include?('INSERT INTO') }
-        update_index = @sql_queries.find_index { |sql| sql.include?('UPDATE') && sql.include?('token') }
+        expect(insert_index).not_to be_nil, 'No INSERT SQL was executed'
 
-        # This assertion might fail if tokens aren't being persisted properly
-        expect(update_index).not_to be_nil, 'No UPDATE SQL with tokens was executed'
-        expect(update_index).to be > insert_index, 'UPDATE should come after INSERT'
+        # Check if the INSERT statement includes token columns
+        expect(@sql_queries[insert_index]).to include('_token')
       end
     end
 
@@ -173,14 +172,14 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
         expect(user_from_db.read_attribute(:first_name)).to eq('John')
         expect(user_from_db.read_attribute(:first_name_token)).to eq('token_for_John')
 
-        # Verify UPDATE SQL was executed
-        update_executed = @sql_queries.any? { |sql| sql.include?('UPDATE') && sql.include?('token') }
-        expect(update_executed).to be true
+        # With our simplified approach, tokens are set directly in the INSERT
+        token_in_insert = @sql_queries.any? { |sql| sql.include?('INSERT') && sql.include?('_token') }
+        expect(token_in_insert).to be(true)
       end
     end
 
     context 'class after_save callback' do
-      it 'verifies after_save callback is registered' do
+      it 'verifies no after_save callback is registered anymore' do
         User.tokenize_pii(
           fields: {
             first_name: 'FIRST_NAME',
@@ -203,8 +202,9 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
           end
         end
 
-        # Verify our process_after_save_tokenization callback is registered
-        expect(callbacks).to include('process_after_save_tokenization')
+        # Verify our process_after_save_tokenization callback is NOT registered
+        # since we simplified the code to use single-phase tokenization
+        expect(callbacks).not_to include('process_after_save_tokenization')
       end
     end
 

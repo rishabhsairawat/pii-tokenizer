@@ -22,11 +22,36 @@ PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Ide
 - **Automatic handling**: Encrypt on save, decrypt on access—no manual intervention needed
 - **Batch operations**: Efficient API calls for improved performance with collections
 - **Secure handling**: PII is never stored in plaintext in your database
-- **Optimized transactions**: Eliminates redundant database operations
+- **Optimized transactions**: Single-phase tokenization with no redundant database operations
 - **Dual-write support**: Option to maintain both original and tokenized values
 - **Flexible configuration**: Customize entity types, identifiers, and storage modes
 - **Search capabilities**: Standard ActiveRecord query methods work with tokenized fields
 - **Rails version support**: Full compatibility with Rails 4.2+ through 6.x
+
+## Requirements
+
+- **Ruby 2.4+** and **Rails 4.2+**
+- Each tokenized field must have a corresponding `_token` column in your database
+- A reliable entity identifier that is **always available** during model saves
+
+## Entity ID Requirement
+
+The PII Tokenizer requires a unique entity identifier for each record. This identifier is used to generate unique tokens for your data and must be available during the tokenization process.
+
+**Important:** The entity_id proc must always return a valid value during model saves, even for new records. If your entity_id depends on a database-generated ID, ensure you're using a strategy that makes the ID available during the initial save operation.
+
+Example of a reliable entity_id:
+```ruby
+# Using UUID that's set before save
+tokenize_pii fields: [:email],
+           entity_type: 'user',
+           entity_id: ->(user) { user.uuid }
+
+# Using an external ID that's guaranteed to be present
+tokenize_pii fields: [:email],
+           entity_type: 'customer',
+           entity_id: ->(customer) { "customer_#{customer.external_id}" }
+```
 
 ## Rails Version Compatibility
 
@@ -39,12 +64,6 @@ PiiTokenizer is fully compatible with Rails 4.2+ and newer versions. The gem inc
 - **Method Visibility Differences**:
   - Some methods like `write_attribute` have different visibility (private/public) across versions
   - PiiTokenizer uses `safe_write_attribute` to handle these differences
-
-- **Rails 4.2 Specific Compatibility**:
-  - Special handling for methods like `insert` and `_update_record` in Rails 4.2
-  - Custom method_missing implementations for maintaining consistent behavior
-  - Centralized version detection to ensure correct behavior in all Rails environments
-  - Optimized handling of class attributes initialization for Rails 4.2 compatibility
 
 You don't need to worry about these differences - PiiTokenizer handles them transparently with internal compatibility layers. Your code will work the same way across all supported Rails versions.
 
@@ -120,7 +139,7 @@ class User < ApplicationRecord
                  email: 'EMAIL'
                },
                entity_type: 'USER',
-               entity_id: ->(user) { user.id.to_s },
+               entity_id: ->(user) { user.id.to_s },  # Must always return a valid value
                dual_write: false  # Optional: Set to true to keep original values alongside tokens
 end
 ```
@@ -133,7 +152,7 @@ class Customer < ApplicationRecord
   
   tokenize_pii fields: [:first_name, :last_name, :email],
                entity_type: 'CUSTOMER',
-               entity_id: ->(customer) { customer.id.to_s }
+               entity_id: ->(customer) { customer.id.to_s }  # Must always return a valid value
 end
 ```
 

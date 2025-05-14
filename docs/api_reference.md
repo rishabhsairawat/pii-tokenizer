@@ -54,7 +54,7 @@ Configures tokenization for the model.
 |--------|------|-------------|---------|
 | `fields` | Hash or Array | Fields to tokenize with their PII types, or array of field names | Required |
 | `entity_type` | String or Proc | The entity type for encryption | Required |
-| `entity_id` | Proc | Method or proc that returns the entity ID | Required |
+| `entity_id` | Proc | Method or proc that returns a unique entity ID. **Must always return a valid value during save operations, even for new records.** | Required |
 | `dual_write` | Boolean | Whether to write to both original and token columns | `false` |
 | `read_from_token` | Boolean | Whether to read from token columns | Opposite of `dual_write` |
 
@@ -70,7 +70,7 @@ class User < ActiveRecord::Base
     email: 'EMAIL'
   },
   entity_type: 'USER',
-  entity_id: ->(record) { record.id.to_s },
+  entity_id: ->(record) { record.id.to_s },  # Must always return a valid value
   dual_write: false,
   read_from_token: true
 end
@@ -81,7 +81,7 @@ class Profile < ActiveRecord::Base
   
   tokenize_pii fields: [:first_name, :last_name, :email],
               entity_type: 'PROFILE',
-              entity_id: ->(record) { record.id.to_s }
+              entity_id: ->(record) { record.id.to_s }  # Must always return a valid value
 end
 ```
 
@@ -175,7 +175,15 @@ users.each { |user| puts user.email }  # No additional API calls
 
 #### `encrypt_pii_fields`
 
-Encrypts all tokenized fields for the record. This is called automatically before saving a record.
+Encrypts all tokenized fields for the record in a single phase. This is called automatically before saving a record and handles the complete tokenization process.
+
+This method:
+1. Checks which fields need tokenization (new fields, changed fields, or fields missing tokens)
+2. Processes tokenization for these fields in a single operation
+3. For persisted records, applies any necessary database updates directly
+4. Handles dual-write mode appropriately if configured
+
+**Note:** This method assumes `entity_id` is always available during the save operation.
 
 **Example:**
 

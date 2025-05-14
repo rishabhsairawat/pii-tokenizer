@@ -194,17 +194,45 @@ RSpec.describe 'Rails version compatibility' do
       end
     end
 
-    it 'handles is_new_record check in process_after_save_tokenization' do
-      # In process_after_save_tokenization, we check if a record is new based on changes
-      if ::ActiveRecord::VERSION::MAJOR >= 5
-        # In Rails 5, new records should have 'id' in previous_changes
-        allow(user).to receive(:previous_changes).and_return('id' => [nil, 1])
-        expect(user.send(:field_changed?, 'id')).to be true
-      else
-        # In Rails 4, new records should have 'id' in changes
-        allow(user).to receive(:changes).and_return('id' => [nil, 1])
-        expect(user.send(:field_changed?, 'id')).to be true
+    it 'uses entity_id directly without availability checks' do
+      # Configure a test class with tokenization
+      test_class = Class.new(ActiveRecord::Base) do
+        self.table_name = 'users' # Use existing users table for testing
       end
+
+      # Include the tokenizable module
+      test_class.include(PiiTokenizer::Tokenizable)
+
+      # Configure tokenization with a proc that always returns a fixed value
+      test_class.tokenize_pii(
+        fields: { first_name: 'FIRST_NAME' },
+        entity_type: 'test_type',
+        entity_id: ->(_) { 'test_id' },
+        dual_write: false,
+        read_from_token: true
+      )
+
+      # Create a new instance
+      test_record = test_class.new(first_name: 'Test Value')
+
+      # Verify that entity_id works as expected
+      expect(test_record.entity_id).to eq('test_id')
+      expect(test_record.entity_type).to eq('test_type')
+
+      # Set up the expectation on the encryption service
+      expect(encryption_service).to receive(:encrypt_batch) do |tokens_data|
+        # In our simplified approach, entity_id should be directly used without checks
+        expect(tokens_data.size).to be >= 1
+        expect(tokens_data.first[:entity_id]).to eq('test_id')
+        expect(tokens_data.first[:entity_type]).to eq('test_type')
+        expect(tokens_data.first[:value]).to eq('Test Value')
+        expect(tokens_data.first[:pii_type]).to eq('FIRST_NAME')
+        {} # Return empty result
+      end
+
+      # Manually trigger tokenization
+      fields_to_process = [:first_name]
+      test_record.send(:process_tokenization, fields_to_process)
     end
 
     it 'correctly falls back to empty hash when changes methods are missing' do
