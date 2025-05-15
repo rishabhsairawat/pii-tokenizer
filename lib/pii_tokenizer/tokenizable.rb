@@ -10,6 +10,7 @@ require_relative 'tokenizable/field_accessors'
 require_relative 'tokenizable/search'
 require_relative 'tokenizable/batch_operations'
 require_relative 'tokenizable/find_or_create'
+require_relative 'tokenizable/json_fields'
 
 module PiiTokenizer
   # Tokenizable module for handling PII tokenization in ActiveRecord models
@@ -24,6 +25,7 @@ module PiiTokenizer
   # - Efficient batch encryption/decryption
   # - Integration with ActiveRecord callbacks
   # - Support for searching by tokenized fields
+  # - Support for tokenizing specific keys within JSON fields
   #
   # Implementation requires:
   # - Each tokenized field must have a corresponding _token column in the database
@@ -49,6 +51,17 @@ module PiiTokenizer
   #                 dual_write: true
   #   end
   #
+  # @example With JSON field tokenization
+  #   class Profile < ActiveRecord::Base
+  #     include PiiTokenizer::Tokenizable
+  #
+  #     tokenize_pii fields: [:user_id],
+  #                 entity_type: 'profile',
+  #                 entity_id: ->(profile) { "profile_#{profile.id}" }
+  #
+  #     tokenize_json_fields profile_details: [:name, :email_id]
+  #   end
+  #
   # @note The entity_id proc must always return a valid entity_id string
   module Tokenizable
     extend ActiveSupport::Concern
@@ -61,6 +74,7 @@ module PiiTokenizer
       include Search
       include BatchOperations
       include FindOrCreate
+      include JsonFields
     end
 
     # Make our extension module available as a constant

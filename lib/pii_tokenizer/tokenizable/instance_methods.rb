@@ -47,7 +47,9 @@ module PiiTokenizer
       # --- Decryption Methods ---
 
       def register_for_decryption
-        return if self.class.tokenized_fields.empty? || new_record?
+        return if self.class.tokenized_fields.empty? &&
+                  (!defined?(self.class.json_tokenized_fields) || self.class.json_tokenized_fields.empty?) ||
+                  new_record?
 
         clear_decryption_cache
       end

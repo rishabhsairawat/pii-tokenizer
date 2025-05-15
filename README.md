@@ -11,6 +11,7 @@ PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Ide
 - [API Reference](docs/api_reference.md) - Detailed information on all methods and options
 - [Best Practices](docs/best_practices.md) - Recommendations for secure implementations
 - [Data Migration Guide](docs/data_migration_guide.md) - Guide for migrating existing data to tokenized storage
+- [JSON Field Tokenization](docs/JSON_FIELD_TOKENIZATION.md) - Guide for tokenizing specific keys within JSON columns
 - [Troubleshooting](docs/troubleshooting.md) - Solutions for common issues
 - [Rails Compatibility](docs/rails_compatibility.md) - Details on Rails version compatibility features
 - [Testing Guide](TESTING.md) - Instructions for testing across different Rails versions
@@ -24,6 +25,7 @@ PiiTokenizer is a Ruby gem that provides seamless tokenization of Personally Ide
 - **Secure handling**: PII is never stored in plaintext in your database
 - **Optimized transactions**: Single-phase tokenization with no redundant database operations
 - **Dual-write support**: Option to maintain both original and tokenized values
+- **JSON field tokenization**: Tokenize specific keys within JSON columns while preserving structure
 - **Flexible configuration**: Customize entity types, identifiers, and storage modes
 - **Search capabilities**: Standard ActiveRecord query methods work with tokenized fields
 - **Rails version support**: Full compatibility with Rails 4.2+ through 6.x
