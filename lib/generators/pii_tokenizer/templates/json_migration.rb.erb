@@ -1,0 +1,7 @@
+class Add<%= migration_class_name %>JsonTokenColumns < ActiveRecord::Migration<%= migration_version %>
+  def change
+    <% json_fields.each do |json_field| %>
+    add_column :<%= table_name %>, :<%= json_field %>_token, :<%= column_type %>
+    <% end %>
+  end
+end 

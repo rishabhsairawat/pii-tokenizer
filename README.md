@@ -167,6 +167,17 @@ $ rails db:migrate
 
 This will add columns named `first_name_token`, `last_name_token`, and `email_token`.
 
+#### JSON Token Columns
+
+For JSON field tokenization, you can use a specialized generator:
+
+```bash
+$ rails generate pii_tokenizer:json_token_columns profile profile_details user_settings
+$ rails db:migrate
+```
+
+This will add `profile_details_token` and `user_settings_token` columns to the profiles table.
+
 ### Usage Example
 
 ```ruby
