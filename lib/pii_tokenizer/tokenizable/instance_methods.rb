@@ -141,19 +141,12 @@ module PiiTokenizer
           encrypted_value = get_encrypted_value(field, token_column)
           next if encrypted_value.blank?
 
-          # For debug
-          Rails.logger.debug("PiiTokenizer: Field #{field} has token #{encrypted_value}") if defined?(Rails) && Rails.logger
+          # Skip duplicates to avoid redundant decryption requests
+          next if unique_tokens[encrypted_value]
+          unique_tokens[encrypted_value] = true
 
-          # Track this token and its field mapping
-          if unique_tokens[encrypted_value]
-            # This token is already in our list, just add this field to the mapping
-            token_field_map[encrypted_value] << field
-          else
-            # First time seeing this token
-            unique_tokens[encrypted_value] = true
-            tokens_to_decrypt << encrypted_value
-            token_field_map[encrypted_value] = [field]
-          end
+          tokens_to_decrypt << encrypted_value
+          token_field_map[encrypted_value] = [field]
         end
 
         # Process JSON tokenized fields if available
@@ -172,32 +165,24 @@ module PiiTokenizer
               next unless tokenized_data[key].present?
               
               token = tokenized_data[key]
-              field_key = "#{json_field}.#{key}"
               
-              # For debug
-              Rails.logger.debug("PiiTokenizer: JSON Field #{field_key} has token #{token}") if defined?(Rails) && Rails.logger
-              
-              # Track this token and its field mapping
+              # Skip duplicates but add this field to the mapping for the token
               if unique_tokens[token]
-                # This token is already in our list, just add this field to the mapping
-                token_field_map[token] << field_key
-              else
-                # First time seeing this token
-                unique_tokens[token] = true
-                tokens_to_decrypt << token
-                token_field_map[token] = [field_key]
+                # Add this JSON field to the existing token mapping
+                field_key = "#{json_field}.#{key}"
+                existing_token_fields = token_field_map[token]
+                existing_token_fields << field_key unless existing_token_fields.include?(field_key)
+                next
               end
+              
+              unique_tokens[token] = true
+              tokens_to_decrypt << token
+              token_field_map[token] = ["#{json_field}.#{key}"]
             end
           end
         end
 
         return if tokens_to_decrypt.empty?
-
-        # Debug
-        if defined?(Rails) && Rails.logger
-          Rails.logger.debug("PiiTokenizer: Decrypting tokens: #{tokens_to_decrypt.inspect}")
-          Rails.logger.debug("PiiTokenizer: Token field map: #{token_field_map.inspect}")
-        end
 
         # 2. Batch decrypt
         decrypted_values = PiiTokenizer.encryption_service.decrypt_batch(tokens_to_decrypt)
@@ -208,10 +193,6 @@ module PiiTokenizer
           next unless field_keys
 
           field_keys.each do |field_key|
-            if defined?(Rails) && Rails.logger
-              Rails.logger.debug("PiiTokenizer: Caching decrypted value for #{field_key}")
-            end
-            
             # Convert field_key to string before checking for '.'
             field_key_str = field_key.to_s
             
@@ -250,6 +231,11 @@ module PiiTokenizer
             
             json_data = read_attribute(json_field)
             next if json_data.blank?
+            
+            # Only process JSON fields that have changed
+            if !new_record? && !json_field_changed?(json_field)
+              next
+            end
             
             json_fields_to_process << json_field
           end
@@ -360,9 +346,25 @@ module PiiTokenizer
             # Skip keys that will be tokenized - they'll be handled separately
             next if keys.include?(key)
 
-            # Copy non-tokenized keys as-is
-            tokenized_data[key] = value
-            modified = true
+            # Only copy non-tokenized keys if they're different or missing
+            if !tokenized_data.key?(key) || tokenized_data[key] != value
+              tokenized_data[key] = value
+              modified = true
+            end
+          end
+
+          # Get previous JSON data if this is an update
+          previous_json_data = {}
+          if !new_record? && respond_to?(:attribute_before_last_save)
+            # Rails 5.1+
+            prev_data = attribute_before_last_save(json_field.to_s)
+            if prev_data.present?
+              previous_json_data = begin
+                                     prev_data.is_a?(Hash) ? prev_data : JSON.parse(prev_data.to_s)
+                                   rescue StandardError
+                                     {}
+                                   end
+            end
           end
 
           # Add JSON fields to the batch
@@ -370,8 +372,11 @@ module PiiTokenizer
             value = json_data[key]
             next if value.blank?
 
-            # Skip if already tokenized and unchanged
-            next if tokenized_data[key].present? && tokenized_data[key] == json_data[key]
+            # Skip if not a new record and value hasn't changed
+            if !new_record? && previous_json_data[key] == value && 
+               tokenized_data.key?(key) && tokenized_data[key].present?
+              next
+            end
 
             # Get the PII type for this field/key
             pii_type = self.class.json_pii_types.dig(json_field, key)
@@ -632,6 +637,22 @@ module PiiTokenizer
           end
 
           update_columns(update_hash) unless update_hash.empty?
+        end
+      end
+
+      # Helper method to check if a JSON field has changed
+      def json_field_changed?(json_field)
+        # Use different methods based on Rails version
+        if respond_to?(:saved_change_to_attribute?)
+          # Rails 5.1+ changed? API
+          saved_change_to_attribute?(json_field.to_s)
+        elsif respond_to?(:attribute_changed?)
+          # Rails 4 and 5.0 changed? API
+          attribute_changed?(json_field.to_s)
+        else
+          # Fallback for older Rails or non-Rails
+          instance_variable_defined?("@_#{json_field}_changed") ||
+            (previous_changes && previous_changes.key?(json_field.to_s))
         end
       end
     end
