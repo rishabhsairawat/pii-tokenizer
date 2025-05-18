@@ -33,7 +33,12 @@ module PiiTokenizer
               return instance_variable_get("@original_#{field}")
             end
 
-            # Check if we have a cached decrypted value
+            # If cache is empty, load all fields at once before doing anything else
+            if field_decryption_cache.empty?
+              decrypt_all_fields
+            end
+            
+            # Now check if we have a cached decrypted value (after batch load)
             if field_decryption_cache.key?(field)
               return field_decryption_cache[field]
             end
@@ -48,6 +53,11 @@ module PiiTokenizer
             # Decide which value to use based on settings
             if self.class.read_from_token_column && !token_value.nil?
               # When reading from token is enabled and we have a token (including empty string), decrypt it
+              # Add debugging info
+              if defined?(Rails) && Rails.logger
+                Rails.logger.debug("PiiTokenizer: Field #{field} still not in cache, calling decrypt_field")
+              end
+              
               decrypted = decrypt_field(field)
               return decrypted
             elsif !self.class.read_from_token_column && field_value.present?

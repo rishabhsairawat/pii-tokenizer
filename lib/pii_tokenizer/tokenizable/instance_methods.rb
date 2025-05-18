@@ -131,6 +131,7 @@ module PiiTokenizer
         # 1. Collect all tokens that need decryption
         tokens_to_decrypt = []
         token_field_map = {}
+        unique_tokens = {}
 
         # Process regular tokenized fields
         self.class.tokenized_fields.each do |field|
@@ -140,8 +141,19 @@ module PiiTokenizer
           encrypted_value = get_encrypted_value(field, token_column)
           next if encrypted_value.blank?
 
-          tokens_to_decrypt << encrypted_value
-          token_field_map[encrypted_value] = field
+          # For debug
+          Rails.logger.debug("PiiTokenizer: Field #{field} has token #{encrypted_value}") if defined?(Rails) && Rails.logger
+
+          # Track this token and its field mapping
+          if unique_tokens[encrypted_value]
+            # This token is already in our list, just add this field to the mapping
+            token_field_map[encrypted_value] << field
+          else
+            # First time seeing this token
+            unique_tokens[encrypted_value] = true
+            tokens_to_decrypt << encrypted_value
+            token_field_map[encrypted_value] = [field]
+          end
         end
 
         # Process JSON tokenized fields if available
@@ -160,31 +172,56 @@ module PiiTokenizer
               next unless tokenized_data[key].present?
               
               token = tokenized_data[key]
-              tokens_to_decrypt << token
-              token_field_map[token] = "#{json_field}.#{key}"
+              field_key = "#{json_field}.#{key}"
+              
+              # For debug
+              Rails.logger.debug("PiiTokenizer: JSON Field #{field_key} has token #{token}") if defined?(Rails) && Rails.logger
+              
+              # Track this token and its field mapping
+              if unique_tokens[token]
+                # This token is already in our list, just add this field to the mapping
+                token_field_map[token] << field_key
+              else
+                # First time seeing this token
+                unique_tokens[token] = true
+                tokens_to_decrypt << token
+                token_field_map[token] = [field_key]
+              end
             end
           end
         end
 
         return if tokens_to_decrypt.empty?
 
+        # Debug
+        if defined?(Rails) && Rails.logger
+          Rails.logger.debug("PiiTokenizer: Decrypting tokens: #{tokens_to_decrypt.inspect}")
+          Rails.logger.debug("PiiTokenizer: Token field map: #{token_field_map.inspect}")
+        end
+
         # 2. Batch decrypt
         decrypted_values = PiiTokenizer.encryption_service.decrypt_batch(tokens_to_decrypt)
 
         # 3. Update cache with results
         decrypted_values.each do |token, value|
-          field_key = token_field_map[token] 
-          next unless field_key
+          field_keys = token_field_map[token] 
+          next unless field_keys
 
-          # Convert field_key to string before checking for '.'
-          field_key_str = field_key.to_s
-          
-          if field_key_str.include?('.')
-            # JSON field, store with the special key format
-            field_decryption_cache[field_key.to_sym] = value
-          else
-            # Regular field
-            field_decryption_cache[field_key.to_sym] = value
+          field_keys.each do |field_key|
+            if defined?(Rails) && Rails.logger
+              Rails.logger.debug("PiiTokenizer: Caching decrypted value for #{field_key}")
+            end
+            
+            # Convert field_key to string before checking for '.'
+            field_key_str = field_key.to_s
+            
+            if field_key_str.include?('.')
+              # JSON field, store with the special key format
+              field_decryption_cache[field_key.to_sym] = value
+            else
+              # Regular field
+              field_decryption_cache[field_key.to_sym] = value
+            end
           end
         end
       end
