@@ -120,11 +120,6 @@ module PiiTokenizer
           self.json_tokenized_fields = normalized_fields
           self.json_pii_types = normalized_pii_types
 
-          # Register before_save callback if not already registered
-          unless _save_callbacks.map(&:filter).include?(:process_json_tokenization)
-            before_save :process_json_tokenization
-          end
-
           # Add an after_initialize callback to validate token columns exist at runtime
           unless _initialize_callbacks.map(&:filter).include?(:validate_json_token_columns)
             after_initialize :validate_json_token_columns
@@ -135,35 +130,64 @@ module PiiTokenizer
             keys.each do |key|
               # Define method to access decrypted value
               define_method("#{json_field}_#{key}") do
-                json_data = self[json_field]
-                tokenized_json = self["#{json_field}_token"]
+                # Check cache first using the combined format
+                cache_key = "#{json_field}.#{key}".to_sym
+                return field_decryption_cache[cache_key] if field_decryption_cache.key?(cache_key)
 
-                # Check if tokenized data exists
-                if tokenized_json.present?
-                  tokenized_json = begin
-                                     tokenized_json.is_a?(Hash) ? tokenized_json : JSON.parse(tokenized_json.to_s)
-                                   rescue StandardError
-                                     {}
-                                   end
+                # If cache is empty, load all tokenized fields (both regular and JSON)
+                if field_decryption_cache.empty?
+                  decrypt_all_fields
+                  return field_decryption_cache[cache_key] if field_decryption_cache.key?(cache_key)
+                end
+
+                # Get token data with consideration for test stubs
+                # Use read_attribute instead of [] to respect test stubs
+                tokenized_json = read_attribute("#{json_field}_token")
+                tokenized_json = begin
+                                   tokenized_json.is_a?(Hash) ? tokenized_json : JSON.parse(tokenized_json.to_s)
+                                 rescue StandardError
+                                   {}
+                                 end
+
+                # If read_from_token_column is true, we only care about tokens
+                if self.class.read_from_token_column
+                  # Only try to decrypt if the token exists
                   if tokenized_json[key].present?
-                    decrypt_json_value(json_field, key, tokenized_json[key])
-                  elsif !self.class.read_from_token_column && json_data.present?
-                    # If read_from_token_column is false AND the key is not in tokenized data, check original data
-                    json_data = begin
-                                  json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
-                                rescue StandardError
-                                  {}
-                                end
-                    json_data[key]
+                    token = tokenized_json[key]
+                    result = PiiTokenizer.encryption_service.decrypt_batch([token])
+                    decrypted_value = result[token]
+                    
+                    # Cache and return the decrypted value if found
+                    field_decryption_cache[cache_key] = decrypted_value if decrypted_value
+                    return decrypted_value
                   end
-                elsif !self.class.read_from_token_column && json_data.present?
-                  # If read_from_token_column is false AND no tokenized data, use original data
+                  
+                  # If we're here, the token doesn't exist and read_from_token_column is true
+                  # So we return nil (no fallback to original data)
+                  return nil
+                else
+                  # If read_from_token_column is false, we can fall back to original data
+                  # Try to decrypt the token first
+                  if tokenized_json[key].present?
+                    token = tokenized_json[key]
+                    result = PiiTokenizer.encryption_service.decrypt_batch([token])
+                    decrypted_value = result[token]
+                    
+                    # Cache and return the decrypted value if found
+                    if decrypted_value
+                      field_decryption_cache[cache_key] = decrypted_value
+                      return decrypted_value
+                    end
+                  end
+                  
+                  # Fall back to original data
+                  json_data = read_attribute(json_field)
                   json_data = begin
                                 json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
                               rescue StandardError
                                 {}
                               end
-                  json_data[key]
+                  return json_data[key]
                 end
               end
             end
@@ -171,165 +195,50 @@ module PiiTokenizer
             # If read_from_token_column is true, override the original attribute accessor
             # Using the same global setting as regular tokenized fields
             define_method(json_field) do
-              # Check if we should read from token
-              if self.class.read_from_token_column
-                # Get the tokenized JSON data
-                tokenized_json = read_attribute("#{json_field}_token")
+              # Get the tokenized JSON data
+              tokenized_json = read_attribute("#{json_field}_token")
 
-                # If there's no tokenized data, return an empty hash instead of falling back to original
-                return {} if tokenized_json.blank?
+              # If there's no tokenized data, return an empty hash
+              return {} if tokenized_json.blank?
 
-                # Ensure we're working with a hash
-                tokenized_json = begin
-                                   tokenized_json.is_a?(Hash) ? tokenized_json : JSON.parse(tokenized_json.to_s)
-                                 rescue StandardError
-                                   {}
-                                 end
+              # Ensure we're working with a hash
+              tokenized_json = begin
+                                 tokenized_json.is_a?(Hash) ? tokenized_json : JSON.parse(tokenized_json.to_s)
+                               rescue StandardError
+                                 {}
+                               end
 
-                # Create a new hash with decrypted values for tokenized fields
-                decrypted_json = tokenized_json.dup
+              # Create a new hash with decrypted values for tokenized fields
+              decrypted_json = tokenized_json.dup
 
-                # Process only the keys that are tokenized
-                tokenized_keys = self.class.json_tokenized_fields[json_field.to_s]
-                tokenized_keys.each do |key|
-                  if tokenized_json[key].present?
-                    decrypted_json[key] = decrypt_json_value(json_field, key, tokenized_json[key])
-                  end
-                end
-
-                # Return the hash with decrypted values
-                decrypted_json
-              else
-                # If read_from_token_column is false, use the original method
-                read_attribute(json_field)
+              # Get all tokenized keys for this field
+              tokenized_keys = self.class.json_tokenized_fields[json_field.to_s]
+              
+              # If the cache is empty, fill it with all fields
+              if field_decryption_cache.empty?
+                decrypt_all_fields
               end
+
+              # Replace tokenized values with decrypted values from cache
+              tokenized_keys.each do |key|
+                cache_key = "#{json_field}.#{key}".to_sym
+                if field_decryption_cache.key?(cache_key)
+                  decrypted_json[key] = field_decryption_cache[cache_key]
+                end
+              end
+
+              # Return the hash with decrypted values
+              decrypted_json
             end
           end
         end
-      end
-
-      # Process JSON field tokenization before saving
-      def process_json_tokenization
-        return if self.class.json_tokenized_fields.empty?
-
-        self.class.json_tokenized_fields.each do |json_field, keys|
-          next unless respond_to?(json_field)
-
-          json_data = read_attribute(json_field)
-          next if json_data.blank?
-
-          # Ensure we're working with a hash
-          json_data = begin
-                        json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
-                      rescue StandardError
-                        {}
-                      end
-
-          # Get or initialize tokenized data
-          tokenized_column = "#{json_field}_token"
-          tokenized_data = read_attribute(tokenized_column)
-          tokenized_data = tokenized_data.present? ?
-            (begin
-               tokenized_data.is_a?(Hash) ? tokenized_data : JSON.parse(tokenized_data.to_s)
-             rescue StandardError
-               {}
-             end) :
-            {}
-
-          modified = false
-
-          # Copy all fields from the original JSON to tokenized column
-          # This ensures we have a complete copy, not just the tokenized fields
-          json_data.each do |key, value|
-            # Skip keys that will be tokenized - they'll be handled separately
-            next if keys.include?(key)
-
-            # Copy non-tokenized keys as-is
-            tokenized_data[key] = value
-            modified = true
-          end
-
-          # Process each key that needs tokenization
-          keys.each do |key|
-            value = json_data[key]
-            next if value.blank?
-
-            # Skip if already tokenized and value hasn't changed
-            next if tokenized_data[key].present? &&
-                    (self.class.dual_write_enabled ? value == json_data[key] : true)
-
-            # Get token for the value
-            token = tokenize_json_value(json_field, key, value)
-            next unless token
-
-            # Store the token in the tokenized column
-            tokenized_data[key] = token
-            modified = true
-          end
-
-          # Update the tokenized column if modified
-          write_attribute(tokenized_column, tokenized_data) if modified
-        end
-      end
-
-      # Tokenize a specific value in a JSON field
-      def tokenize_json_value(json_field, key, value)
-        return nil if value.blank?
-
-        # Get entity information from the model's configuration
-        entity_type = self.class.entity_type_proc.call(self)
-        entity_id = self.class.entity_id_proc.call(self)
-
-        # Get the PII type for this field/key - must be explicitly defined
-        pii_type = self.class.json_pii_types.dig(json_field, key)
-        return nil unless pii_type
-
-        # Prepare the tokenization data
-        tokens_data = [{
-          value: value,
-          entity_id: entity_id,
-          entity_type: entity_type,
-          field_name: "#{json_field}.#{key}",
-          pii_type: pii_type
-        }]
-
-        # Call the encryption service
-        key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-        token_key = "#{entity_type.upcase}:#{entity_id}:#{pii_type}:#{value}"
-        key_to_token[token_key]
-      end
-
-      # Decrypt a tokenized value from a JSON field
-      def decrypt_json_value(json_field, key, token)
-        return nil if token.blank?
-
-        # Use caching for better performance
-        cache_key = "#{json_field}.#{key}".to_sym
-        return field_decryption_cache[cache_key] if field_decryption_cache.key?(cache_key)
-
-        # Decrypt the token
-        result = PiiTokenizer.encryption_service.decrypt_batch([token])
-        decrypted_value = result[token]
-
-        # Cache the decrypted value
-        field_decryption_cache[cache_key] = decrypted_value if decrypted_value
-        decrypted_value
       end
 
       # Decrypt all specified keys in a JSON field
       def decrypt_json_field(json_field)
         return {} unless self.class.json_tokenized_fields.key?(json_field.to_s)
 
-        # Get original and tokenized data
-        json_data = read_attribute(json_field)
-        json_data = json_data.present? ?
-          (begin
-             json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
-           rescue StandardError
-             {}
-           end) :
-          {}
-
+        # Get tokenized data - use read_attribute to respect test stubs
         tokenized_column = "#{json_field}_token"
         tokenized_data = read_attribute(tokenized_column)
         tokenized_data = tokenized_data.present? ?
@@ -340,23 +249,77 @@ module PiiTokenizer
            end) :
           {}
 
+        # Create result hash starting with non-tokenized fields
         keys = self.class.json_tokenized_fields[json_field.to_s]
         result = {}
 
         # Include all non-tokenized fields from the tokenized column
         tokenized_data.each do |key, value|
           next if keys.include?(key)
-
           result[key] = value
         end
 
-        # Process tokenized fields
-        keys.each do |key|
-          if tokenized_data[key].present?
-            result[key] = decrypt_json_value(json_field, key, tokenized_data[key])
-          elsif !self.class.read_from_token_column && json_data[key].present?
-            # Only fall back to original data if read_from_token_column is false
-            result[key] = json_data[key]
+        # If the cache is empty, fill it with all fields
+        if field_decryption_cache.empty?
+          decrypt_all_fields
+        end
+
+        # If read_from_token_column is true, we should only include data from tokens
+        if self.class.read_from_token_column
+          # Process tokenized fields - only if they exist in the token data
+          keys.each do |key|
+            next unless tokenized_data.key?(key)
+            
+            cache_key = "#{json_field}.#{key}".to_sym
+            
+            if field_decryption_cache.key?(cache_key)
+              # Use cached decrypted value
+              result[key] = field_decryption_cache[cache_key]
+            elsif tokenized_data[key].present?
+              # Token exists - try to decrypt
+              token = tokenized_data[key]
+              decrypted_values = PiiTokenizer.encryption_service.decrypt_batch([token])
+              value = decrypted_values[token]
+              
+              if value.present?
+                result[key] = value
+                field_decryption_cache[cache_key] = value
+              end
+            end
+          end
+        else
+          # When read_from_token_column is false, we can include data from both sources
+          # Get original data using read_attribute to respect test stubs
+          json_data = read_attribute(json_field)
+          json_data = json_data.present? ?
+            (begin
+               json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
+             rescue StandardError
+               {}
+             end) :
+            {}
+            
+          # Process all tokenized fields
+          keys.each do |key|
+            cache_key = "#{json_field}.#{key}".to_sym
+            
+            if field_decryption_cache.key?(cache_key)
+              # Use cached decrypted value
+              result[key] = field_decryption_cache[cache_key]
+            elsif tokenized_data[key].present?
+              # Token exists - try to decrypt
+              token = tokenized_data[key]
+              decrypted_values = PiiTokenizer.encryption_service.decrypt_batch([token])
+              value = decrypted_values[token]
+              
+              if value.present?
+                result[key] = value
+                field_decryption_cache[cache_key] = value
+              end
+            # Fall back to original data if the token doesn't exist
+            elsif json_data[key].present?
+              result[key] = json_data[key]
+            end
           end
         end
 

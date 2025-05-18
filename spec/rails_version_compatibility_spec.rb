@@ -231,8 +231,7 @@ RSpec.describe 'Rails version compatibility' do
       end
 
       # Manually trigger tokenization
-      fields_to_process = [:first_name]
-      test_record.send(:process_tokenization, fields_to_process)
+      test_record.send(:encrypt_pii_fields)
     end
 
     it 'correctly falls back to empty hash when changes methods are missing' do
