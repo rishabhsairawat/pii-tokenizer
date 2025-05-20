@@ -404,8 +404,46 @@ module PiiTokenizer
             # ActiveRecord's `serialize` will handle converting it to a JSON string.
             model_instance.safe_write_attribute(attr_name_str, self)
 
-            # Perform PII tokenization based on the new state.
-            model_instance.process_json_field_tokenization(attr_name_str)
+            # Only tokenize this specific key rather than the entire JSON object
+            # This avoids unnecessary API calls while maintaining test expectations
+            if model_instance.class.json_tokenized_fields.key?(attr_name_str) &&
+               model_instance.class.json_tokenized_fields[attr_name_str].include?(key_str)
+
+              pii_type = model_instance.class.json_pii_types.dig(attr_name_str, key_str)
+
+              if pii_type.present?
+                # Update the field_decryption_cache
+                model_instance.field_decryption_cache["#{attr_name_str}.#{key_str}".to_sym] = value_param
+
+                # Get existing token data
+                token_data = model_instance.read_attribute("#{attr_name_str}_token")
+                token_data = begin
+                              token_data.is_a?(Hash) ? token_data : JSON.parse(token_data.to_s)
+                             rescue StandardError
+                               {}
+                            end
+
+                # Generate token data for this field
+                tokens_data = [{
+                  value: value_param,
+                  entity_id: model_instance.entity_id,
+                  entity_type: model_instance.entity_type,
+                  field_name: "#{attr_name_str}.#{key_str}",
+                  pii_type: pii_type
+                }]
+
+                # Tokenize just this single value
+                key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
+                encryption_key = "#{model_instance.entity_type.upcase}:#{model_instance.entity_id}:#{pii_type}:#{value_param}"
+                token = key_to_token[encryption_key]
+
+                # Update token_data with the new token
+                token_data[key_str] = token if token.present?
+
+                # Save the updated token data
+                model_instance.safe_write_attribute("#{attr_name_str}_token", token_data)
+              end
+            end
           end
         end
       end
