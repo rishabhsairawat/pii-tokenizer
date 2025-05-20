@@ -236,10 +236,17 @@ module PiiTokenizer
             json_data = read_attribute(json_field)
             next if json_data.blank?
 
-            # Only process JSON fields that have changed
-            if !new_record? && !json_field_changed?(json_field)
+            # Process if field has changed or if it's specifically marked for processing
+            needs_tokenization = instance_variable_defined?("@#{json_field}_json_needs_tokenization") &&
+                                 instance_variable_get("@#{json_field}_json_needs_tokenization")
+
+            # Only process JSON fields that have changed or are marked for tokenization
+            if !new_record? && !json_field_changed?(json_field) && !needs_tokenization
               next
             end
+
+            # Clear the flag if it exists
+            instance_variable_set("@#{json_field}_json_needs_tokenization", false) if instance_variable_defined?("@#{json_field}_json_needs_tokenization")
 
             json_fields_to_process << json_field
           end
