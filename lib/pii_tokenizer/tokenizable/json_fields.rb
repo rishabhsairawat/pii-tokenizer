@@ -326,6 +326,12 @@ module PiiTokenizer
         # Get the list of keys to tokenize
         keys = self.class.json_tokenized_fields[json_field.to_s]
 
+        # Prepare token data for batch encryption
+        tokens_data = []
+
+        # Track which keys will be tokenized
+        keys_to_tokenize = []
+
         # Tokenize each key
         keys.each do |key|
           next unless json_data.key?(key)
@@ -336,25 +342,49 @@ module PiiTokenizer
           # Skip empty values or missing PII types
           next if value.nil? || value == '' || pii_type.blank?
 
-          # Generate token data for this field
-          tokens_data = [{
+          # Add to tokens data for batch encryption
+          tokens_data << {
             value: value,
             entity_id: entity_id,
             entity_type: entity_type,
             field_name: "#{json_field}.#{key}",
             pii_type: pii_type
-          }]
+          }
 
-          # Tokenize the value
-          key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
-          encryption_key = "#{entity_type.upcase}:#{entity_id}:#{pii_type}:#{value}"
-          token = key_to_token[encryption_key]
+          # Track this key for later processing
+          keys_to_tokenize << key
 
-          # Store the token in the token hash
-          token_data[key] = token if token.present?
-
-          # Update the cache with the decrypted value
+          # Cache the decrypted value
           field_decryption_cache["#{json_field}.#{key}".to_sym] = value
+        end
+
+        # Process tokens in batch if needed
+        unless tokens_data.empty?
+          # Tokenize the values in a single batch
+          tokens_for_encryption = tokens_data.map do |data|
+            {
+              value: data[:value],
+              entity_id: data[:entity_id],
+              entity_type: data[:entity_type],
+              field_name: data[:field_name],
+              pii_type: data[:pii_type]
+            }
+          end
+
+          key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_for_encryption)
+
+          # Update token_data with tokens
+          tokens_data.each_with_index do |data, index|
+            key = keys_to_tokenize[index]
+            value = data[:value]
+            pii_type = data[:pii_type]
+
+            encryption_key = "#{data[:entity_type].upcase}:#{data[:entity_id]}:#{pii_type}:#{value}"
+            token = key_to_token[encryption_key]
+
+            # Store the token in the token hash
+            token_data[key] = token if token.present?
+          end
         end
 
         # Copy all non-tokenized keys from the original data
