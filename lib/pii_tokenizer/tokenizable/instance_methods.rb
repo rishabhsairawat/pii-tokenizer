@@ -125,7 +125,7 @@ module PiiTokenizer
 
       # New method to decrypt all tokenized fields (both regular and JSON) in a single batch
       def decrypt_all_fields
-        return if self.class.tokenized_fields.empty? && 
+        return if self.class.tokenized_fields.empty? &&
                   (!defined?(self.class.json_tokenized_fields) || self.class.json_tokenized_fields.empty?)
 
         # 1. Collect all tokens that need decryption
@@ -143,6 +143,7 @@ module PiiTokenizer
 
           # Skip duplicates to avoid redundant decryption requests
           next if unique_tokens[encrypted_value]
+
           unique_tokens[encrypted_value] = true
 
           tokens_to_decrypt << encrypted_value
@@ -163,9 +164,9 @@ module PiiTokenizer
 
             keys.each do |key|
               next unless tokenized_data[key].present?
-              
+
               token = tokenized_data[key]
-              
+
               # Skip duplicates but add this field to the mapping for the token
               if unique_tokens[token]
                 # Add this JSON field to the existing token mapping
@@ -174,7 +175,7 @@ module PiiTokenizer
                 existing_token_fields << field_key unless existing_token_fields.include?(field_key)
                 next
               end
-              
+
               unique_tokens[token] = true
               tokens_to_decrypt << token
               token_field_map[token] = ["#{json_field}.#{key}"]
@@ -189,20 +190,20 @@ module PiiTokenizer
 
         # 3. Update cache with results
         decrypted_values.each do |token, value|
-          field_keys = token_field_map[token] 
+          field_keys = token_field_map[token]
           next unless field_keys
 
           field_keys.each do |field_key|
             # Convert field_key to string before checking for '.'
             field_key_str = field_key.to_s
-            
-            if field_key_str.include?('.')
-              # JSON field, store with the special key format
-              field_decryption_cache[field_key.to_sym] = value
-            else
-              # Regular field
-              field_decryption_cache[field_key.to_sym] = value
-            end
+
+            field_decryption_cache[field_key.to_sym] = if field_key_str.include?('.')
+                                                         # JSON field, store with the special key format
+                                                         value
+                                                       else
+                                                         # Regular field
+                                                         value
+                                                       end
           end
         end
       end
@@ -211,13 +212,16 @@ module PiiTokenizer
 
       def encrypt_pii_fields
         # Skip if no tokenized fields and no JSON tokenized fields
-        return if self.class.tokenized_fields.empty? && 
+        return if self.class.tokenized_fields.empty? &&
                   (!defined?(self.class.json_tokenized_fields) || self.class.json_tokenized_fields.empty?)
 
-        # Process regular tokenized fields
-        regular_fields_processed = !self.class.tokenized_fields.empty?
-        if regular_fields_processed
+        # Track if we need to process regular fields
+        regular_fields_processed = true
+
+        # For existing records, check if tokenized fields changed
+        unless self.class.tokenized_fields.empty?
           # Early return for unchanged persisted records - this is an optimization
+          # But always process for new records
           if !new_record? && !tokenized_field_changes? && all_fields_have_tokens?
             regular_fields_processed = false
           end
@@ -228,15 +232,15 @@ module PiiTokenizer
         if defined?(self.class.json_tokenized_fields) && self.class.json_tokenized_fields.any?
           self.class.json_tokenized_fields.each do |json_field, _keys|
             next unless respond_to?(json_field)
-            
+
             json_data = read_attribute(json_field)
             next if json_data.blank?
-            
+
             # Only process JSON fields that have changed
             if !new_record? && !json_field_changed?(json_field)
               next
             end
-            
+
             json_fields_to_process << json_field
           end
         end
@@ -259,7 +263,7 @@ module PiiTokenizer
         # Process regular fields
         if regular_fields_processed
           fields_to_process = fields_needing_tokenization
-          
+
           # Add regular fields to the batch
           fields_to_process.each do |field|
             token_column = token_column_for(field)
@@ -373,7 +377,7 @@ module PiiTokenizer
             next if value.blank?
 
             # Skip if not a new record and value hasn't changed
-            if !new_record? && previous_json_data[key] == value && 
+            if !new_record? && previous_json_data[key] == value &&
                tokenized_data.key?(key) && tokenized_data[key].present?
               next
             end
@@ -398,9 +402,9 @@ module PiiTokenizer
           end
 
           # Store tokenized data for later update
-          json_field_updates[json_field] = { 
-            tokenized_data: tokenized_data, 
-            modified: modified 
+          json_field_updates[json_field] = {
+            tokenized_data: tokenized_data,
+            modified: modified
           }
         end
 
@@ -420,9 +424,9 @@ module PiiTokenizer
             pii_type: data[:pii_type]
           }
         end
-        
+
         key_to_token = PiiTokenizer.encryption_service.encrypt_batch(values_for_encryption)
-        
+
         # Now apply the tokens to the respective fields
         update_model_with_combined_tokens(tokens_data, key_to_token, json_field_updates)
 
@@ -434,12 +438,12 @@ module PiiTokenizer
       def update_model_with_combined_tokens(tokens_data, key_to_token, json_field_updates)
         tokens_data.each do |token_data|
           value = token_data[:value]
-          
+
           # Generate key
           entity_type = token_data[:entity_type].upcase
           entity_id = token_data[:entity_id]
           pii_type = token_data[:pii_type]
-          
+
           key = "#{entity_type}:#{entity_id}:#{pii_type}:#{value}"
           token = key_to_token[key]
           next unless token
@@ -448,7 +452,7 @@ module PiiTokenizer
             # Regular field
             field = token_data[:field_name]
             field_sym = field.to_sym
-            
+
             # Update token column
             token_column = token_column_for(field_sym)
             safe_write_attribute(token_column, token)
@@ -475,26 +479,26 @@ module PiiTokenizer
             # JSON field
             json_field = token_data[:json_field]
             key = token_data[:json_key]
-            
+
             # Update the token in the tokenized data
             field_update = json_field_updates[json_field]
             next unless field_update && field_update[:modified]
-            
+
             field_update[:tokenized_data][key] = token
-            
+
             # Update cache
             cache_key = "#{json_field}.#{key}".to_sym
             field_decryption_cache[cache_key] = value if value.present?
           end
         end
-        
+
         # Apply JSON field updates
         json_field_updates.each do |json_field, update_info|
           next unless update_info[:modified]
-          
+
           tokenized_column = "#{json_field}_token"
-          write_attribute(tokenized_column, update_info[:tokenized_data])
-          
+          safe_write_attribute(tokenized_column, update_info[:tokenized_data])
+
           if respond_to?(:attribute_will_change!)
             send(:attribute_will_change!, tokenized_column)
           end
@@ -652,7 +656,7 @@ module PiiTokenizer
         else
           # Fallback for older Rails or non-Rails
           instance_variable_defined?("@_#{json_field}_changed") ||
-            (previous_changes && previous_changes.key?(json_field.to_s))
+            previous_changes&.key?(json_field.to_s)
         end
       end
     end

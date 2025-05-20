@@ -68,16 +68,6 @@ end
 class User < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
-  # Helper for test compatibility with Rails 4 and 5
-  def safe_write_attribute(attribute, value)
-    if ::ActiveRecord::VERSION::MAJOR >= 5
-      write_attribute(attribute, value)
-    else
-      # In Rails 4.2, write_attribute is private
-      send(:write_attribute, attribute, value)
-    end
-  end
-
   tokenize_pii fields: {
     first_name: 'FIRST_NAME',
     last_name: 'LAST_NAME',
@@ -92,16 +82,6 @@ end
 class InternalUser < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
-  # Helper for test compatibility with Rails 4 and 5
-  def safe_write_attribute(attribute, value)
-    if ::ActiveRecord::VERSION::MAJOR >= 5
-      write_attribute(attribute, value)
-    else
-      # In Rails 4.2, write_attribute is private
-      send(:write_attribute, attribute, value)
-    end
-  end
-
   tokenize_pii fields: %i[first_name last_name],
                entity_type: 'internal_staff',
                entity_id: ->(record) { "InternalUser_#{record.id}_#{record.role}" },
@@ -111,16 +91,6 @@ end
 
 class Contact < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
-
-  # Helper for test compatibility with Rails 4 and 5
-  def safe_write_attribute(attribute, value)
-    if ::ActiveRecord::VERSION::MAJOR >= 5
-      write_attribute(attribute, value)
-    else
-      # In Rails 4.2, write_attribute is private
-      send(:write_attribute, attribute, value)
-    end
-  end
 
   tokenize_pii fields: {
     full_name: 'NAME',

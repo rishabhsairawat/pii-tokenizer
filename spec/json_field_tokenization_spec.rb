@@ -233,11 +233,11 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       # Reload to ensure values are persisted
       profile.reload
 
-      # Access using generated accessor methods
-      expect(profile.profile_details_name).to eq('John Doe')
-      expect(profile.profile_details_email_id).to eq('john@example.com')
-      expect(profile.contact_info_phone).to eq('555-1234')
-      expect(profile.contact_info_address).to eq('123 Main St')
+      # Access using hash access
+      expect(profile.profile_details['name']).to eq('John Doe')
+      expect(profile.profile_details['email_id']).to eq('john@example.com')
+      expect(profile.contact_info['phone']).to eq('555-1234')
+      expect(profile.contact_info['address']).to eq('123 Main St')
     end
 
     it 'provides a method to decrypt the entire JSON field' do
@@ -287,8 +287,8 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
           expect(profile_details['name']).to eq('John Doe') # Original plaintext value
           expect(profile_details['email_id']).to eq('john@example.com') # Original plaintext value
 
-          # Still can use the individual accessors
-          expect(profile.profile_details_name).to eq('John Doe')
+          # Access directly using hash access
+          expect(profile.profile_details['name']).to eq('John Doe')
         end
       end
     end
@@ -403,9 +403,9 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       # Reload to ensure values are persisted
       profile.reload
 
-      # Should still work with accessor methods
-      expect(profile.profile_details_name).to eq('John Doe')
-      expect(profile.profile_details_email_id).to eq('john@example.com')
+      # Access using hash access
+      expect(profile.profile_details['name']).to eq('John Doe')
+      expect(profile.profile_details['email_id']).to eq('john@example.com')
 
       # Should be able to decrypt the full field
       decrypted = profile.decrypt_json_field(:profile_details)
@@ -422,7 +422,7 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       profile.save(validate: false)
 
       # Access should not raise errors and return nil for keys
-      expect(profile.profile_details_name).to be_nil
+      expect(profile.profile_details['name']).to be_nil
 
       # Decrypt should return empty hash for invalid JSON
       expect(profile.decrypt_json_field(:profile_details)).to eq({})
@@ -503,11 +503,11 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       end
 
       # Force decryption by accessing with no cache
-      name1 = profile.profile_details_name
+      name1 = profile.profile_details['name']
       expect(name1).to eq('John Doe')
 
       # The second call should use the cache
-      name2 = profile.profile_details_name
+      name2 = profile.profile_details['name']
       expect(name2).to eq('John Doe')
 
       # We should have only called decrypt_batch once
@@ -529,7 +529,7 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       )
 
       # Access the tokenized values to verify
-      expect(profile.profile_details_name).to eq('John Doe')
+      expect(profile.profile_details['name']).to eq('John Doe')
 
       # Create a completely new profile with a different name but same other values
       profile2 = Profile.create!(
@@ -590,12 +590,12 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       profile = Profile.new(user_id: 123)
 
       # Accessing a field before it's set should not raise errors
-      expect(profile.profile_details_name).to be_nil
+      expect(profile.profile_details['name']).to be_nil
       expect(profile.decrypt_json_field(:profile_details)).to eq({})
 
       # Accessing a non-existent key should return nil
       profile.profile_details = { 'other_key' => 'value' }
-      expect(profile.profile_details_name).to be_nil
+      expect(profile.profile_details['name']).to be_nil
 
       # decrypt_json_field for a field that doesn't exist in json_tokenized_fields
       expect(profile.decrypt_json_field(:nonexistent_field)).to eq({})
@@ -766,12 +766,12 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       profile = Profile.new(user_id: 123)
 
       # Accessing a field before it's set should not raise errors
-      expect(profile.profile_details_name).to be_nil
+      expect(profile.profile_details['name']).to be_nil
       expect(profile.decrypt_json_field(:profile_details)).to eq({})
 
       # Accessing a non-existent key should return nil
       profile.profile_details = { 'other_key' => 'value' }
-      expect(profile.profile_details_name).to be_nil
+      expect(profile.profile_details['name']).to be_nil
     end
 
     it 'returns early when json_tokenized_fields is empty' do
@@ -803,7 +803,7 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
       allow(profile).to receive(:field_decryption_cache).and_return(cache)
 
       # First call should set the cache
-      profile.profile_details_name
+      profile.profile_details['name']
 
       # Cache should now have an entry
       expect(cache).not_to be_empty
@@ -860,15 +860,16 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
 
       # With read_from_token_column = true, this should return nil for email_id
       # since it's not in the token data
-      expect(profile.profile_details_email_id).to be_nil
+      expect(profile.profile_details['email_id']).to be_nil
 
       # Now test with read_from_token_column = false
       with_read_from_token(false) do
         # Clear the cache to ensure we test the fallback behavior
         empty_cache.clear
 
-        # With read_from_token_column = false, this should read from original data
-        expect(profile.profile_details_email_id).to eq('john@example.com')
+        # Use decrypt_json_field since it has different behavior than direct hash access
+        decrypted = profile.decrypt_json_field(:profile_details)
+        expect(decrypted['email_id']).to eq('john@example.com')
       end
     end
 
@@ -978,6 +979,127 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
 
       result = PiiTokenizer.encryption_service.decrypt_batch([''])
       expect(result).to be_empty
+    end
+  end
+
+  describe 'JSON field change detection' do
+    it 'detects changes when json field values are modified directly' do
+      # Create a profile with JSON data
+      profile = Profile.create!(
+        user_id: 123,
+        profile_details: {
+          name: 'John Doe',
+          email_id: 'john@example.com',
+          listing_cap: 3
+        }
+      )
+
+      # Reload to ensure values are persisted
+      profile.reload
+
+      # Verify initial state is unchanged
+      expect(profile.changed?).to be false
+      # In Rails 4.2, attribute_changed? for a serialized JSON attribute
+      # on a freshly reloaded record can return nil. We treat nil as falsey (unchanged).
+      expect(profile).not_to be_attribute_changed('profile_details')
+
+      # Directly modify a key in the JSON field
+      profile.profile_details['name'] = 'Jane Doe'
+
+      # Should detect that the JSON field has changed
+      expect(profile.changed?).to be true
+      expect(profile.attribute_changed?('profile_details')).to be true
+
+      # Save and verify change was persisted
+      profile.save!
+      profile.reload
+
+      expect(profile.profile_details['name']).to eq('Jane Doe')
+      expect(profile.profile_details_token['name']).to eq('token_for_Jane Doe')
+    end
+
+    it 'detects changes when setting a new hash to the json field' do
+      # Create a profile with JSON data
+      profile = Profile.create!(
+        user_id: 123,
+        profile_details: {
+          name: 'John Doe',
+          email_id: 'john@example.com',
+          listing_cap: 3
+        }
+      )
+
+      # Reload to ensure values are persisted
+      profile.reload
+
+      # Verify initial state is unchanged
+      expect(profile.changed?).to be false
+      # In Rails 4.2, attribute_changed? for a serialized JSON attribute
+      # on a freshly reloaded record can return nil. We treat nil as falsey (unchanged).
+      expect(profile).not_to be_attribute_changed('profile_details')
+
+      # Get a copy of the JSON that we can modify
+      details = profile.profile_details.dup
+      details['name'] = 'Jane Doe'
+
+      # Now set the entire hash
+      profile.profile_details = details
+
+      # Should detect that the JSON field has changed
+      expect(profile.attribute_changed?('profile_details')).to be true
+      expect(profile.changed?).to be true
+
+      # Save and verify change was persisted
+      profile.save!
+      profile.reload
+
+      expect(profile.profile_details['name']).to eq('Jane Doe')
+      expect(profile.profile_details_token['name']).to eq('token_for_Jane Doe')
+    end
+
+    it 'properly handles successive modifications to JSON fields' do
+      # Create a profile with JSON data
+      profile = Profile.create!(
+        user_id: 123,
+        profile_details: {
+          name: 'John Doe',
+          email_id: 'john@example.com',
+          listing_cap: 3
+        }
+      )
+
+      # Reload to ensure values are persisted
+      profile.reload
+
+      # First modification
+      profile.profile_details['name'] = 'Jane Doe'
+
+      # Should detect that the JSON field has changed
+      expect(profile.changed?).to be true
+      expect(profile.attribute_changed?('profile_details')).to be true
+
+      # Save the first change
+      profile.save!
+      profile.reload
+
+      # Verify the change was saved
+      expect(profile.profile_details['name']).to eq('Jane Doe')
+      expect(profile.profile_details_token['name']).to eq('token_for_Jane Doe')
+
+      # Make another change
+      profile.profile_details['email_id'] = 'jane@example.com'
+
+      # Should again detect that the field has changed
+      expect(profile.changed?).to be true
+      expect(profile.attribute_changed?('profile_details')).to be true
+
+      # Save and verify the second change was persisted
+      profile.save!
+      profile.reload
+
+      expect(profile.profile_details['name']).to eq('Jane Doe')
+      expect(profile.profile_details['email_id']).to eq('jane@example.com')
+      expect(profile.profile_details_token['email_id']).to eq('token_for_jane@example.com')
     end
   end
 end

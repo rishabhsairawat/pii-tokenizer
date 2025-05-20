@@ -29,9 +29,9 @@ module PiiTokenizer
     # @example Accessing tokenized JSON values
     #   profile = Profile.find(1)
     #
-    #   # Access using the generated accessor methods
-    #   name = profile.profile_details_name
-    #   email = profile.profile_details_email_id
+    #   # Access using hash access notation
+    #   name = profile.profile_details['name']
+    #   email = profile.profile_details['email_id']
     #
     #   # Or decrypt the entire JSON field at once
     #   decrypted_data = profile.decrypt_json_field(:profile_details)
@@ -126,72 +126,7 @@ module PiiTokenizer
           end
 
           # Define accessors for each JSON field
-          normalized_fields.each do |json_field, keys|
-            keys.each do |key|
-              # Define method to access decrypted value
-              define_method("#{json_field}_#{key}") do
-                # Check cache first using the combined format
-                cache_key = "#{json_field}.#{key}".to_sym
-                return field_decryption_cache[cache_key] if field_decryption_cache.key?(cache_key)
-
-                # If cache is empty, load all tokenized fields (both regular and JSON)
-                if field_decryption_cache.empty?
-                  decrypt_all_fields
-                  return field_decryption_cache[cache_key] if field_decryption_cache.key?(cache_key)
-                end
-
-                # Get token data with consideration for test stubs
-                # Use read_attribute instead of [] to respect test stubs
-                tokenized_json = read_attribute("#{json_field}_token")
-                tokenized_json = begin
-                                   tokenized_json.is_a?(Hash) ? tokenized_json : JSON.parse(tokenized_json.to_s)
-                                 rescue StandardError
-                                   {}
-                                 end
-
-                # If read_from_token_column is true, we only care about tokens
-                if self.class.read_from_token_column
-                  # Only try to decrypt if the token exists
-                  if tokenized_json[key].present?
-                    token = tokenized_json[key]
-                    result = PiiTokenizer.encryption_service.decrypt_batch([token])
-                    decrypted_value = result[token]
-                    
-                    # Cache and return the decrypted value if found
-                    field_decryption_cache[cache_key] = decrypted_value if decrypted_value
-                    return decrypted_value
-                  end
-                  
-                  # If we're here, the token doesn't exist and read_from_token_column is true
-                  # So we return nil (no fallback to original data)
-                  return nil
-                else
-                  # If read_from_token_column is false, we can fall back to original data
-                  # Try to decrypt the token first
-                  if tokenized_json[key].present?
-                    token = tokenized_json[key]
-                    result = PiiTokenizer.encryption_service.decrypt_batch([token])
-                    decrypted_value = result[token]
-                    
-                    # Cache and return the decrypted value if found
-                    if decrypted_value
-                      field_decryption_cache[cache_key] = decrypted_value
-                      return decrypted_value
-                    end
-                  end
-                  
-                  # Fall back to original data
-                  json_data = read_attribute(json_field)
-                  json_data = begin
-                                json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
-                              rescue StandardError
-                                {}
-                              end
-                  return json_data[key]
-                end
-              end
-            end
-
+          normalized_fields.each do |json_field, _keys|
             # If read_from_token_column is true, override the original attribute accessor
             # Using the same global setting as regular tokenized fields
             define_method(json_field) do
@@ -213,7 +148,7 @@ module PiiTokenizer
 
               # Get all tokenized keys for this field
               tokenized_keys = self.class.json_tokenized_fields[json_field.to_s]
-              
+
               # If the cache is empty, fill it with all fields
               if field_decryption_cache.empty?
                 decrypt_all_fields
@@ -227,8 +162,22 @@ module PiiTokenizer
                 end
               end
 
-              # Return the hash with decrypted values
-              decrypted_json
+              # Create a custom tracking class to detect changes to the returned hash
+              decrypted_hash = HashJsonField.new(decrypted_json)
+              decrypted_hash.instance_variable_set(:@_original_model, self)
+              decrypted_hash.instance_variable_set(:@_json_field, json_field.to_s)
+              decrypted_hash
+            end
+
+            # Define the setter method for the JSON field to ensure changes are tracked
+            define_method("#{json_field}=") do |value|
+              # Call the original method using safe_write_attribute
+              safe_write_attribute(json_field, value)
+
+              # Now process the tokenization for this field
+              process_json_field_tokenization(json_field)
+
+              value
             end
           end
         end
@@ -256,6 +205,7 @@ module PiiTokenizer
         # Include all non-tokenized fields from the tokenized column
         tokenized_data.each do |key, value|
           next if keys.include?(key)
+
           result[key] = value
         end
 
@@ -269,9 +219,9 @@ module PiiTokenizer
           # Process tokenized fields - only if they exist in the token data
           keys.each do |key|
             next unless tokenized_data.key?(key)
-            
+
             cache_key = "#{json_field}.#{key}".to_sym
-            
+
             if field_decryption_cache.key?(cache_key)
               # Use cached decrypted value
               result[key] = field_decryption_cache[cache_key]
@@ -280,7 +230,7 @@ module PiiTokenizer
               token = tokenized_data[key]
               decrypted_values = PiiTokenizer.encryption_service.decrypt_batch([token])
               value = decrypted_values[token]
-              
+
               if value.present?
                 result[key] = value
                 field_decryption_cache[cache_key] = value
@@ -298,11 +248,11 @@ module PiiTokenizer
                {}
              end) :
             {}
-            
+
           # Process all tokenized fields
           keys.each do |key|
             cache_key = "#{json_field}.#{key}".to_sym
-            
+
             if field_decryption_cache.key?(cache_key)
               # Use cached decrypted value
               result[key] = field_decryption_cache[cache_key]
@@ -311,7 +261,7 @@ module PiiTokenizer
               token = tokenized_data[key]
               decrypted_values = PiiTokenizer.encryption_service.decrypt_batch([token])
               value = decrypted_values[token]
-              
+
               if value.present?
                 result[key] = value
                 field_decryption_cache[cache_key] = value
@@ -349,6 +299,115 @@ module PiiTokenizer
         end
       rescue ActiveRecord::NoDatabaseError, ActiveRecord::StatementInvalid
         # Ignore database connection errors during boot time
+      end
+
+      # Process tokenization for a specific JSON field
+      def process_json_field_tokenization(json_field)
+        return unless self.class.json_tokenized_fields.key?(json_field.to_s)
+
+        # Get the current JSON data
+        json_data = read_attribute(json_field)
+
+        # Ensure it's a hash
+        json_data = begin
+                      json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
+                    rescue StandardError
+                      {}
+                    end
+
+        # Get existing token data or initialize a new hash
+        token_data = read_attribute("#{json_field}_token")
+        token_data = begin
+                       token_data.is_a?(Hash) ? token_data : JSON.parse(token_data.to_s)
+                     rescue StandardError
+                       {}
+                     end
+
+        # Get the list of keys to tokenize
+        keys = self.class.json_tokenized_fields[json_field.to_s]
+
+        # Tokenize each key
+        keys.each do |key|
+          next unless json_data.key?(key)
+
+          value = json_data[key]
+          pii_type = self.class.json_pii_types.dig(json_field, key)
+
+          # Skip empty values or missing PII types
+          next if value.nil? || value == '' || pii_type.blank?
+
+          # Generate token data for this field
+          tokens_data = [{
+            value: value,
+            entity_id: entity_id,
+            entity_type: entity_type,
+            field_name: "#{json_field}.#{key}",
+            pii_type: pii_type
+          }]
+
+          # Tokenize the value
+          key_to_token = PiiTokenizer.encryption_service.encrypt_batch(tokens_data)
+          encryption_key = "#{entity_type.upcase}:#{entity_id}:#{pii_type}:#{value}"
+          token = key_to_token[encryption_key]
+
+          # Store the token in the token hash
+          token_data[key] = token if token.present?
+
+          # Update the cache with the decrypted value
+          field_decryption_cache["#{json_field}.#{key}".to_sym] = value
+        end
+
+        # Copy all non-tokenized keys from the original data
+        json_data.each do |key, value|
+          next if keys.include?(key)
+
+          token_data[key] = value
+        end
+
+        # Write the tokenized data back to the token column
+        safe_write_attribute("#{json_field}_token", token_data)
+      end
+    end
+
+    # Custom hash class for JSON fields that tracks changes to the field
+    class HashJsonField < Hash
+      def initialize(hash = {})
+        super()
+        hash.each { |k, v| self[k] = v }
+      end
+
+      # @_original_model and @_json_field are set when this HashJsonField is created.
+
+      def []=(key_param, value_param)
+        key_str = key_param.to_s # Ensure string keys
+
+        # Get the value in this HashJsonField *before* super updates it.
+        current_value_in_wrapper = self[key_str]
+
+        # Update the internal state of this HashJsonField instance.
+        super(key_str, value_param)
+
+        # Only proceed with model updates if the value effectively changed within this wrapper.
+        # This covers adding a new key or changing an existing key's value.
+        # self[key_str] now holds the new value after super.
+        if current_value_in_wrapper != self[key_str]
+          model_instance = instance_variable_get(:@_original_model)
+          attr_name_str  = instance_variable_get(:@_json_field).to_s
+
+          if model_instance && attr_name_str
+            # Notify Rails that the main model attribute is about to change.
+            # This is because we will be writing `self` (this hash) to it,
+            # and its serialized form will be different.
+            model_instance.send(:attribute_will_change!, attr_name_str)
+
+            # Write this HashJsonField instance (which is a Hash) to the model's attribute.
+            # ActiveRecord's `serialize` will handle converting it to a JSON string.
+            model_instance.safe_write_attribute(attr_name_str, self)
+
+            # Perform PII tokenization based on the new state.
+            model_instance.process_json_field_tokenization(attr_name_str)
+          end
+        end
       end
     end
   end

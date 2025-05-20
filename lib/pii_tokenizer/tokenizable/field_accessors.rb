@@ -37,7 +37,7 @@ module PiiTokenizer
             if field_decryption_cache.empty?
               decrypt_all_fields
             end
-            
+
             # Now check if we have a cached decrypted value (after batch load)
             if field_decryption_cache.key?(field)
               return field_decryption_cache[field]
@@ -57,7 +57,7 @@ module PiiTokenizer
               if defined?(Rails) && Rails.logger
                 Rails.logger.debug("PiiTokenizer: Field #{field} still not in cache, calling decrypt_field")
               end
-              
+
               decrypted = decrypt_field(field)
               return decrypted
             elsif !self.class.read_from_token_column && field_value.present?
