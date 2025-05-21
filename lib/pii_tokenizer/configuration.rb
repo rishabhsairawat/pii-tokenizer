@@ -6,8 +6,10 @@ module PiiTokenizer
   # @attr_accessor [Integer] batch_size Maximum number of items to process in a single batch request
   # @attr_accessor [Logger, nil] logger Custom logger instance, defaults to nil
   # @attr_accessor [Symbol, Integer] log_level Logging level (:debug, :info, :warn, :error, :fatal)
+  # @attr_accessor [Integer] timeout HTTP request timeout in seconds
+  # @attr_accessor [Integer] open_timeout HTTP connection open timeout in seconds
   class Configuration
-    attr_accessor :encryption_service_url, :batch_size, :logger, :log_level
+    attr_accessor :encryption_service_url, :batch_size, :logger, :log_level, :timeout, :open_timeout
 
     # Initialize a new Configuration instance with default values
     # @return [Configuration] a new instance with default settings
@@ -16,6 +18,8 @@ module PiiTokenizer
       @batch_size = 20
       @logger = nil
       @log_level = :info
+      @timeout = 10
+      @open_timeout = 2
     end
   end
 end

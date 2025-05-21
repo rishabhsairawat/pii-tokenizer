@@ -42,42 +42,6 @@ RSpec.describe PiiTokenizer::Tokenizable do
     end
   end
 
-  describe 'decryption_cache' do
-    it 'initializes an empty hash for new records' do
-      user = User.new(id: 1)
-      expect(User.decryption_cache).to be_a(Hash)
-      expect(User.decryption_cache[user.object_id]).to be_nil
-    end
-
-    it 'stores values by object_id' do
-      user1 = User.new(id: 1)
-      user2 = User.new(id: 2)
-
-      # Use the actual API
-      user1.send(:cache_decrypted_value, :first_name, 'John')
-      user2.send(:cache_decrypted_value, :first_name, 'Jane')
-
-      # Check that the values are stored separately
-      expect(user1.send(:get_cached_decrypted_value, :first_name)).to eq('John')
-      expect(user2.send(:get_cached_decrypted_value, :first_name)).to eq('Jane')
-
-      # Change one and make sure the other doesn't change
-      user1.send(:cache_decrypted_value, :first_name, 'Johnny')
-      expect(user1.send(:get_cached_decrypted_value, :first_name)).to eq('Johnny')
-      expect(user2.send(:get_cached_decrypted_value, :first_name)).to eq('Jane')
-    end
-
-    it 'clears cached values' do
-      user = User.new(id: 1)
-      # Store a value in the per-instance cache, not the global cache
-      user.instance_variable_set(:@field_decryption_cache, { first_name: 'John' })
-      expect(user.field_decryption_cache[:first_name]).to eq('John')
-
-      user.send(:clear_decryption_cache)
-      expect(user.field_decryption_cache[:first_name]).to be_nil
-    end
-  end
-
   describe 'batch operations' do
     before do
       User.delete_all

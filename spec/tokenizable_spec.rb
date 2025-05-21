@@ -130,14 +130,14 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_encryption_service, :use_tokeniza
 
     it 'defines PII types' do
       expect(User.pii_types).to include(
-        'first_name' => 'FIRST_NAME',
-        'last_name' => 'LAST_NAME',
+        'first_name' => 'NAME',
+        'last_name' => 'NAME',
         'email' => 'EMAIL'
       )
     end
 
     it 'defines entity type' do
-      expect(user.entity_type).to eq('user_uuid')
+      expect(user.entity_type).to eq('USER_UUID')
       expect(user.entity_type).to eq(User.entity_type_proc.call(user))
     end
 

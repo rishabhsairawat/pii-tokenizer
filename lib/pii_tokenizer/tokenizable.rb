@@ -16,8 +16,7 @@ module PiiTokenizer
   # Tokenizable module for handling PII tokenization in ActiveRecord models
   #
   # This module provides functionality for tokenizing sensitive personally identifiable
-  # information (PII) in ActiveRecord models. It supports both Rails 4 and Rails 5+
-  # with specialized handling for each version's differences.
+  # information (PII) in ActiveRecord models. It supports Rails 4.2.
   #
   # Key features:
   # - Transparent tokenization of PII fields

@@ -26,11 +26,11 @@ RSpec.describe 'Combined Batch Operations', :use_tokenizable_models do
 
       # Configure regular tokenization
       tokenize_pii fields: {
-        first_name: 'FIRST_NAME',
-        last_name: 'LAST_NAME',
-        email: 'EMAIL'
+        first_name: PiiTokenizer::PiiTypes::NAME,
+        last_name: PiiTokenizer::PiiTypes::NAME,
+        email: PiiTokenizer::PiiTypes::EMAIL
       },
-                   entity_type: 'mixed_record',
+                   entity_type: PiiTokenizer::EntityTypes::PROFILE_UUID,
                    entity_id: ->(record) { "mixed_record_#{record.id}" },
                    dual_write: false,
                    read_from_token: true
@@ -38,12 +38,12 @@ RSpec.describe 'Combined Batch Operations', :use_tokenizable_models do
       # Configure JSON field tokenization
       tokenize_json_fields(
         profile_details: {
-          name: 'NAME',
-          email_id: 'EMAIL'
+          name: PiiTokenizer::PiiTypes::NAME,
+          email_id: PiiTokenizer::PiiTypes::EMAIL
         },
         contact_info: {
-          phone: 'PHONE',
-          address: 'ADDRESS'
+          phone: PiiTokenizer::PiiTypes::PHONE,
+          address: PiiTokenizer::PiiTypes::NAME
         }
       )
 

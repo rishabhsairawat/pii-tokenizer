@@ -1,6 +1,8 @@
 require 'pii_tokenizer/version'
 require 'pii_tokenizer/configuration'
 require 'pii_tokenizer/encryption_service'
+require 'pii_tokenizer/pii_types'
+require 'pii_tokenizer/entity_types'
 require 'pii_tokenizer/tokenizable'
 require 'pii_tokenizer/railtie' if defined?(Rails)
 

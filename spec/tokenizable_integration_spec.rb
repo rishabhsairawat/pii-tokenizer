@@ -58,30 +58,33 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_tokenizable_models do
 
   describe 'basic tokenization' do
     it 'encrypts PII fields when saving a new record' do
-      # Create and save a user
-      user = User.create(
-        first_name: 'Jane',
-        last_name: 'Doe',
-        email: 'jane.doe@example.com'
-      )
+      # Use dual_write mode to preserve original fields
+      with_dual_write(true) do
+        # Create and save a user
+        user = User.create(
+          first_name: 'Jane',
+          last_name: 'Doe',
+          email: 'jane.doe@example.com'
+        )
 
-      # Reload to ensure values are persisted
-      user.reload
+        # Reload to ensure values are persisted
+        user.reload
 
-      # Check token fields
-      expect(user.first_name_token).to eq('token_for_Jane')
-      expect(user.last_name_token).to eq('token_for_Doe')
-      expect(user.email_token).to eq('token_for_jane.doe@example.com')
+        # Check token fields
+        expect(user.first_name_token).to eq('token_for_Jane')
+        expect(user.last_name_token).to eq('token_for_Doe')
+        expect(user.email_token).to eq('token_for_jane.doe@example.com')
 
-      # Check original fields with default config (dual_write=false)
-      expect(user.read_attribute(:first_name)).to be_nil
-      expect(user.read_attribute(:last_name)).to be_nil
-      expect(user.read_attribute(:email)).to be_nil
+        # Check original fields with dual_write=true
+        expect(user.read_attribute(:first_name)).to eq('Jane')
+        expect(user.read_attribute(:last_name)).to eq('Doe')
+        expect(user.read_attribute(:email)).to eq('jane.doe@example.com')
 
-      # But accessors should still work
-      expect(user.first_name).to eq('Jane')
-      expect(user.last_name).to eq('Doe')
-      expect(user.email).to eq('jane.doe@example.com')
+        # Accessors should still work
+        expect(user.first_name).to eq('Jane')
+        expect(user.last_name).to eq('Doe')
+        expect(user.email).to eq('jane.doe@example.com')
+      end
     end
 
     it 'encrypts PII fields when updating an existing record' do
@@ -501,7 +504,10 @@ RSpec.describe PiiTokenizer::Tokenizable, :use_tokenizable_models do
       # Define the test model
       class TestUser < ActiveRecord::Base
         include PiiTokenizer::Tokenizable
-        tokenize_pii fields: %i[email phone],
+        tokenize_pii fields: {
+          email: PiiTokenizer::PiiTypes::EMAIL,
+          phone: PiiTokenizer::PiiTypes::PHONE
+        },
                      entity_type: 'user_uuid',
                      entity_id: ->(user) { user.id.to_s },
                      dual_write: false

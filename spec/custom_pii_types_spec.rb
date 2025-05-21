@@ -32,21 +32,21 @@ RSpec.describe 'Custom PII Types' do
         # Verify the tokens_data contains the correct pii_types
         expect(tokens_data).to include(
           hash_including(
-            entity_type: 'contact',
+            entity_type: PiiTokenizer::EntityTypes::USER_UUID,
             entity_id: 'Contact_1',
             field_name: 'full_name',
             pii_type: 'NAME',
             value: 'John Smith'
           ),
           hash_including(
-            entity_type: 'contact',
+            entity_type: PiiTokenizer::EntityTypes::USER_UUID,
             entity_id: 'Contact_1',
             field_name: 'phone_number',
             pii_type: 'PHONE',
             value: '123-456-7890'
           ),
           hash_including(
-            entity_type: 'contact',
+            entity_type: PiiTokenizer::EntityTypes::USER_UUID,
             entity_id: 'Contact_1',
             field_name: 'email_address',
             pii_type: 'EMAIL',
@@ -56,9 +56,9 @@ RSpec.describe 'Custom PII Types' do
 
         # Return mock tokens
         {
-          'CONTACT:Contact_1:NAME:John Smith' => 'encrypted_name_token',
-          'CONTACT:Contact_1:PHONE:123-456-7890' => 'encrypted_phone_token',
-          'CONTACT:Contact_1:EMAIL:john@example.com' => 'encrypted_email_token'
+          'USER_UUID:Contact_1:NAME:John Smith' => 'encrypted_name_token',
+          'USER_UUID:Contact_1:PHONE:123-456-7890' => 'encrypted_phone_token',
+          'USER_UUID:Contact_1:EMAIL:john@example.com' => 'encrypted_email_token'
         }
       end
 

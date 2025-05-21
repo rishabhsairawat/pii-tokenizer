@@ -48,44 +48,48 @@ module PiiTokenizer
     def encrypt_batch(tokens_data)
       return {} if tokens_data.nil? || tokens_data.empty?
 
-      request_data = tokens_data.map do |token_data|
-        {
-          entity_type: token_data[:entity_type],
-          entity_id: token_data[:entity_id],
-          pii_type: token_data[:pii_type], # Use the provided pii_type
-          pii_field: token_data[:value]
-        }
-      end
-
-      log_request('POST', '/api/v1/tokens/bulk', request_data)
-
-      begin
-        response = api_client.post('/api/v1/tokens/bulk') do |req|
-          req.body = request_data.to_json
-          req.headers['Content-Type'] = 'application/json'
+      result = {}
+      tokens_data.each_slice(@configuration.batch_size) do |batch|
+        request_data = batch.map do |token_data|
+          {
+            entity_type: token_data[:entity_type],
+            entity_id: token_data[:entity_id],
+            pii_type: token_data[:pii_type],
+            pii_field: token_data[:value]
+          }
         end
 
-        log_response(response)
+        log_request('POST', '/api/v1/tokens/bulk', request_data)
 
-        if response.success?
-          parse_encrypt_response(response.body)
-        else
-          handle_error_response(response)
+        begin
+          response = api_client.post('/api/v1/tokens/bulk') do |req|
+            req.body = request_data.to_json
+            req.headers['Content-Type'] = 'application/json'
+          end
+
+          log_response(response)
+
+          if response.success?
+            result.merge!(parse_encrypt_response(response.body))
+          else
+            handle_error_response(response)
+          end
+        rescue Faraday::Error => e
+          error_message = "Failed to connect to encryption service: #{e.message}"
+          @logger.error(error_message)
+          raise error_message
         end
-      rescue Faraday::Error => e
-        error_message = "Failed to connect to encryption service: #{e.message}"
-        @logger.error(error_message)
-        raise error_message
       end
+
+      result
     end
 
     # Decrypt multiple tokens in a batch
     #
-    # @param tokens_data [Array<String>, Array<Hash>, String, nil] Tokens to decrypt
+    # @param tokens_data [Array<String>, String, nil] Tokens to decrypt
     #   Can be:
     #   - A single token string
     #   - An array of token strings
-    #   - An array of hashes with :token, :entity_id, :entity_type, and :pii_type keys (legacy format)
     #   - nil (returns empty hash)
     #
     # @return [Hash<String, String>] Mapping of tokens to decrypted values, or entity keys to values if hashes provided
@@ -97,52 +101,21 @@ module PiiTokenizer
     def decrypt_batch(tokens_data)
       return {} if tokens_data.nil? || (tokens_data.is_a?(Array) && tokens_data.empty?)
 
-      # Handle different input formats
-      if tokens_data.is_a?(Array) && tokens_data.first.is_a?(Hash)
-        # Legacy format with array of hashes with token, entity_id, etc.
-        tokens = tokens_data.map { |td| td[:token] }
+      result = {}
 
-        log_request('GET', '/api/v1/tokens/decrypt', { tokens: tokens })
+      # New format with just tokens
+      tokens = tokens_data.is_a?(Array) ? tokens_data : [tokens_data]
+
+      tokens.each_slice(@configuration.batch_size) do |batch|
+        log_request('GET', '/api/v1/tokens/decrypt', { tokens: batch })
 
         begin
-          response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
+          response = api_client.get('/api/v1/tokens/decrypt', tokens: batch)
 
           log_response(response)
 
           if response.success?
-            token_to_value = parse_token_to_value(response.body)
-
-            # Map back to entity keys for compatibility with existing code
-            result = {}
-            tokens_data.each do |td|
-              if token_to_value.key?(td[:token])
-                key = "#{td[:entity_type].upcase}:#{td[:entity_id]}:#{td[:pii_type]}"
-                result[key] = token_to_value[td[:token]]
-              end
-            end
-
-            result
-          else
-            handle_error_response(response)
-          end
-        rescue Faraday::Error => e
-          error_message = "Failed to connect to encryption service: #{e.message}"
-          @logger.error(error_message)
-          raise error_message
-        end
-      else
-        # New format with just tokens
-        tokens = tokens_data.is_a?(Array) ? tokens_data : [tokens_data]
-
-        log_request('GET', '/api/v1/tokens/decrypt', { tokens: tokens })
-
-        begin
-          response = api_client.get('/api/v1/tokens/decrypt', tokens: tokens)
-
-          log_response(response)
-
-          if response.success?
-            parse_token_to_value(response.body)
+            result.merge!(parse_token_to_value(response.body))
           else
             handle_error_response(response)
           end
@@ -152,6 +125,8 @@ module PiiTokenizer
           raise error_message
         end
       end
+
+      result
     end
 
     # Search for tokens matching a specific PII value
@@ -188,26 +163,6 @@ module PiiTokenizer
       end
     end
 
-    private
-
-    # Log the details of an outgoing request
-    # @param method [String] HTTP method (GET, POST, etc.)
-    # @param path [String] API endpoint path
-    # @param data [Hash, Array] Request payload
-    def log_request(method, path, data)
-      # Sanitize sensitive data for logging
-      safe_data = sanitize_data_for_logging(data)
-      @logger.info("REQUEST: #{method} #{@configuration.encryption_service_url}#{path} - Payload: #{safe_data.to_json}")
-    end
-
-    # Log the details of an incoming response
-    # @param response [Faraday::Response] The HTTP response object
-    def log_response(response)
-      status = response.status
-      safe_body = sanitize_response_for_logging(response.body)
-      @logger.info("RESPONSE: HTTP #{status} - Body: #{safe_body}")
-    end
-
     # Redact sensitive fields for logging
     # @param data [Hash, Array, Object] Data to sanitize
     # @return [Hash, Array, Object] Sanitized data with sensitive fields redacted
@@ -221,7 +176,7 @@ module PiiTokenizer
                            'REDACTED'
                          else
                            v
-                         end
+                        end
         end
         sanitized
       else
@@ -249,13 +204,33 @@ module PiiTokenizer
       end
     end
 
+    private
+
+    # Log the details of an outgoing request
+    # @param method [String] HTTP method (GET, POST, etc.)
+    # @param path [String] API endpoint path
+    # @param data [Hash, Array] Request payload
+    def log_request(method, path, data)
+      # Sanitize sensitive data for logging
+      safe_data = sanitize_data_for_logging(data)
+      @logger.info("REQUEST: #{method} #{@configuration.encryption_service_url}#{path} - Payload: #{safe_data.to_json}")
+    end
+
+    # Log the details of an incoming response
+    # @param response [Faraday::Response] The HTTP response object
+    def log_response(response)
+      status = response.status
+      safe_body = sanitize_response_for_logging(response.body)
+      @logger.info("RESPONSE: HTTP #{status} - Body: #{safe_body}")
+    end
+
     # Create or get a Faraday HTTP client for the configured service
     # @return [Faraday::Connection] The HTTP client
     def api_client
       @api_client ||= Faraday.new(url: @configuration.encryption_service_url) do |conn|
         conn.adapter Faraday.default_adapter
-        conn.options.timeout = 10 # 10 second timeout
-        conn.options.open_timeout = 5 # 5 second open timeout
+        conn.options.timeout = @configuration.timeout
+        conn.options.open_timeout = @configuration.open_timeout
       end
     end
 

@@ -45,13 +45,13 @@ The PII Tokenizer requires a unique entity identifier for each record. This iden
 Example of a reliable entity_id:
 ```ruby
 # Using UUID that's set before save
-tokenize_pii fields: [:email],
-           entity_type: 'user',
+tokenize_pii fields: {email: PiiTokenizer::PiiTypes::EMAIL},
+           entity_type: PiiTokenizer::EntityTypes::USER_UUID,
            entity_id: ->(user) { user.uuid }
 
 # Using an external ID that's guaranteed to be present
-tokenize_pii fields: [:email],
-           entity_type: 'customer',
+tokenize_pii fields: {email: PiiTokenizer::PiiTypes::EMAIL},
+           entity_type: PiiTokenizer::EntityTypes::PROFILE_UUID,
            entity_id: ->(customer) { "customer_#{customer.external_id}" }
 ```
 
@@ -136,25 +136,13 @@ class User < ApplicationRecord
   include PiiTokenizer::Tokenizable
   
   tokenize_pii fields: {
-                 first_name: 'NAME',
-                 last_name: 'NAME',
-                 email: 'EMAIL'
+                 first_name: PiiTokenizer::PiiTypes::NAME,
+                 last_name: PiiTokenizer::PiiTypes::NAME,
+                 email: PiiTokenizer::PiiTypes::EMAIL
                },
-               entity_type: 'USER',
+               entity_type: PiiTokenizer::EntityTypes::USER_UUID,
                entity_id: ->(user) { user.id.to_s },  # Must always return a valid value
                dual_write: false  # Optional: Set to true to keep original values alongside tokens
-end
-```
-
-You can also use an array of field names:
-
-```ruby
-class Customer < ApplicationRecord
-  include PiiTokenizer::Tokenizable
-  
-  tokenize_pii fields: [:first_name, :last_name, :email],
-               entity_type: 'CUSTOMER',
-               entity_id: ->(customer) { customer.id.to_s }  # Must always return a valid value
 end
 ```
 
@@ -208,9 +196,13 @@ For more detailed setup and configuration options, please see the [Getting Start
 class User < ApplicationRecord
   include PiiTokenizer::Tokenizable
   
-  tokenize_pii fields: [:first_name, :last_name, :email],
-               entity_type: ->(user) { user.role || 'customer' },
-               entity_id: ->(user) { "user_#{user.id}" }
+  tokenize_pii fields: {
+    first_name: PiiTokenizer::PiiTypes::NAME,
+    last_name: PiiTokenizer::PiiTypes::NAME,
+    email: PiiTokenizer::PiiTypes::EMAIL
+  },
+  entity_type: ->(user) { user.role == 'admin' ? PiiTokenizer::EntityTypes::USER_UUID : PiiTokenizer::EntityTypes::PROFILE_UUID },
+  entity_id: ->(user) { "user_#{user.id}" }
 end
 ```
 
@@ -242,8 +234,8 @@ puts values[:first_name]
 When `dual_write` is `true`, both the original column and the token column will contain values. When `false` (default), only the token column will have values, and the original column will be `nil`.
 
 ```ruby
-tokenize_pii fields: [:email],
-             entity_type: 'user_uuid',
+tokenize_pii fields: {email: PiiTokenizer::PiiTypes::EMAIL},
+             entity_type: PiiTokenizer::EntityTypes::USER_UUID,
              entity_id: ->(user) { "user_#{user.id}" },
              dual_write: true  # Keep original values in database too
 ```
@@ -257,8 +249,8 @@ By default, `read_from_token` is set to the opposite of `dual_write`:
 You can explicitly set this value:
 
 ```ruby
-tokenize_pii fields: [:email],
-             entity_type: 'user_uuid',
+tokenize_pii fields: {email: PiiTokenizer::PiiTypes::EMAIL},
+             entity_type: PiiTokenizer::EntityTypes::USER_UUID,
              entity_id: ->(user) { "user_#{user.id}" },
              dual_write: true,
              read_from_token: true  # Use token columns for reading
@@ -273,6 +265,27 @@ When `read_from_token` is `false`:
 - Search methods use original columns
 
 See the [API Reference](docs/api_reference.md) for details on all configuration options.
+
+### PII Type Validation
+
+The gem enforces the use of predefined PII types from `PiiTokenizer::PiiTypes` to ensure consistency and correctness:
+
+```ruby
+# Using predefined PII types ensures consistency
+class User < ApplicationRecord
+  include PiiTokenizer::Tokenizable
+  
+  tokenize_pii fields: {
+    first_name: PiiTokenizer::PiiTypes::NAME,
+    last_name: PiiTokenizer::PiiTypes::NAME,
+    email: PiiTokenizer::PiiTypes::EMAIL
+  },
+  entity_type: PiiTokenizer::EntityTypes::USER_UUID,
+  entity_id: ->(user) { user.id.to_s }
+end
+```
+
+Using undefined PII types will raise an `ArgumentError` with a list of all supported types.
 
 ## External Encryption Service API Contract
 
@@ -404,3 +417,25 @@ end
 ## Acknowledgments
 
 - Built with ❤️ for secure data handling in Ruby on Rails applications
+
+### Supported PII Types
+
+PiiTokenizer provides a set of predefined PII types to ensure consistency:
+
+```ruby
+# Supported PII types
+PiiTokenizer::PiiTypes::NAME     # For names (first, last, full)
+PiiTokenizer::PiiTypes::EMAIL    # For email addresses
+PiiTokenizer::PiiTypes::PHONE    # For phone numbers
+PiiTokenizer::PiiTypes::URL      # For URLs and web addresses
+```
+
+### Supported Entity Types
+
+PiiTokenizer provides predefined entity types:
+
+```ruby
+# Supported entity types
+PiiTokenizer::EntityTypes::USER_UUID      # For user-related entities
+PiiTokenizer::EntityTypes::PROFILE_UUID   # For profile-related entities
+```

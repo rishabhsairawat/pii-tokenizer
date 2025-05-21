@@ -30,8 +30,8 @@ RSpec.describe PiiTokenizer::Tokenizable do
       class NoTokenColumnUser
         include PiiTokenizer::Tokenizable
 
-        tokenize_pii fields: %i[username],
-                     entity_type: 'user',
+        tokenize_pii fields: { username: PiiTokenizer::PiiTypes::NAME },
+                     entity_type: PiiTokenizer::EntityTypes::USER_UUID,
                      entity_id: ->(record) { "User_#{record.id}" },
                      dual_write: false,
                      read_from_token: true

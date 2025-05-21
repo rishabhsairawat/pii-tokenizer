@@ -27,9 +27,9 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
       # Configure user with entity_id that depends on record.id
       User.tokenize_pii(
         fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
+          first_name: PiiTokenizer::PiiTypes::NAME,
+          last_name: PiiTokenizer::PiiTypes::NAME,
+          email: PiiTokenizer::PiiTypes::EMAIL
         },
         entity_type: 'user_uuid',
         entity_id: ->(record) { "user_#{record.id}" },
@@ -113,9 +113,9 @@ RSpec.describe 'PiiTokenizer AfterSave Integration' do
       # Configure user with dual_write=false
       User.tokenize_pii(
         fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
+          first_name: PiiTokenizer::PiiTypes::NAME,
+          last_name: PiiTokenizer::PiiTypes::NAME,
+          email: PiiTokenizer::PiiTypes::EMAIL
         },
         entity_type: 'user_uuid',
         entity_id: ->(record) { "user_#{record.id}" },

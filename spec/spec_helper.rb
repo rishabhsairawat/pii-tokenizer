@@ -69,11 +69,11 @@ class User < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
   tokenize_pii fields: {
-    first_name: 'FIRST_NAME',
-    last_name: 'LAST_NAME',
-    email: 'EMAIL'
+    first_name: PiiTokenizer::PiiTypes::NAME,
+    last_name: PiiTokenizer::PiiTypes::NAME,
+    email: PiiTokenizer::PiiTypes::EMAIL
   },
-               entity_type: 'user_uuid',
+               entity_type: PiiTokenizer::EntityTypes::USER_UUID,
                entity_id: ->(record) { record.id.to_s },
                dual_write: false,
                read_from_token: true
@@ -82,8 +82,11 @@ end
 class InternalUser < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
-  tokenize_pii fields: %i[first_name last_name],
-               entity_type: 'internal_staff',
+  tokenize_pii fields: {
+    first_name: PiiTokenizer::PiiTypes::NAME,
+    last_name: PiiTokenizer::PiiTypes::NAME
+  },
+               entity_type: PiiTokenizer::EntityTypes::USER_UUID,
                entity_id: ->(record) { "InternalUser_#{record.id}_#{record.role}" },
                dual_write: false,
                read_from_token: true
@@ -93,11 +96,11 @@ class Contact < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
   tokenize_pii fields: {
-    full_name: 'NAME',
-    phone_number: 'PHONE',
-    email_address: 'EMAIL'
+    full_name: PiiTokenizer::PiiTypes::NAME,
+    phone_number: PiiTokenizer::PiiTypes::PHONE,
+    email_address: PiiTokenizer::PiiTypes::EMAIL
   },
-               entity_type: 'contact',
+               entity_type: PiiTokenizer::EntityTypes::USER_UUID,
                entity_id: ->(record) { "Contact_#{record.id}" },
                dual_write: false,
                read_from_token: true

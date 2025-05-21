@@ -33,20 +33,22 @@ class Profile < ActiveRecord::Base
   include PiiTokenizer::Tokenizable
 
   # Configure regular tokenization
-  tokenize_pii fields: { user_id: 'id' },
-               entity_type: 'profile',
+  tokenize_pii fields: {
+    user_id: PiiTokenizer::PiiTypes::NAME
+  },
+               entity_type: PiiTokenizer::EntityTypes::PROFILE_UUID,
                entity_id: ->(profile) { "profile_#{profile.id}" },
                dual_write: false,
                read_from_token: true
 
   # Configure JSON field tokenization
   tokenize_json_fields profile_details: {
-    name: 'personal_name',
-    email_id: 'email'
+    name: PiiTokenizer::PiiTypes::NAME,
+    email_id: PiiTokenizer::PiiTypes::EMAIL
   },
                        contact_info: {
-                         phone: 'telephone_number',
-                         address: 'postal_address'
+                         phone: PiiTokenizer::PiiTypes::PHONE,
+                         address: PiiTokenizer::PiiTypes::NAME
                        }
 
   # Add serialization for Rails 4.2 compatibility
@@ -339,13 +341,13 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
           self.table_name = 'profiles'
           include PiiTokenizer::Tokenizable
 
-          tokenize_pii fields: { user_id: 'id' },
-                       entity_type: 'profile',
+          tokenize_pii fields: { user_id: PiiTokenizer::PiiTypes::NAME },
+                       entity_type: PiiTokenizer::EntityTypes::PROFILE_UUID,
                        entity_id: ->(profile) { "profile_#{profile.id}" }
 
           # Invalid: missing_column_token doesn't exist
           tokenize_json_fields missing_column: {
-            name: 'personal_name'
+            name: PiiTokenizer::PiiTypes::NAME
           }
         end
       end.to raise_error(ArgumentError, /Column 'missing_column_token' must exist/)
@@ -357,8 +359,8 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
           self.table_name = 'profiles'
           include PiiTokenizer::Tokenizable
 
-          tokenize_pii fields: { user_id: 'id' },
-                       entity_type: 'profile',
+          tokenize_pii fields: { user_id: PiiTokenizer::PiiTypes::NAME },
+                       entity_type: PiiTokenizer::EntityTypes::PROFILE_UUID,
                        entity_id: ->(profile) { "profile_#{profile.id}" }
 
           # Invalid: nil PII type
@@ -819,8 +821,8 @@ RSpec.describe PiiTokenizer::Tokenizable::JsonFields, :use_tokenizable_models do
           self.table_name = 'profiles'
           include PiiTokenizer::Tokenizable
 
-          tokenize_pii fields: { user_id: 'id' },
-                       entity_type: 'profile',
+          tokenize_pii fields: { user_id: PiiTokenizer::PiiTypes::NAME },
+                       entity_type: PiiTokenizer::EntityTypes::PROFILE_UUID,
                        entity_id: ->(profile) { "profile_#{profile.id}" }
 
           # Pass an array instead of hash - invalid format

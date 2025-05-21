@@ -20,11 +20,11 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
     # Reset User configuration
     User.tokenize_pii(
       fields: {
-        first_name: 'FIRST_NAME',
-        last_name: 'LAST_NAME',
-        email: 'EMAIL'
+        first_name: PiiTokenizer::PiiTypes::NAME,
+        last_name: PiiTokenizer::PiiTypes::NAME,
+        email: PiiTokenizer::PiiTypes::EMAIL
       },
-      entity_type: 'user_uuid',
+      entity_type: PiiTokenizer::EntityTypes::USER_UUID,
       entity_id: ->(record) { record.id.to_s },
       dual_write: false,
       read_from_token: true
@@ -48,8 +48,8 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
 
       # Configure tokenization
       tokenize_pii(
-        fields: { message: 'MESSAGE' },
-        entity_type: 'log',
+        fields: { message: PiiTokenizer::PiiTypes::NAME },
+        entity_type: PiiTokenizer::EntityTypes::USER_UUID,
         entity_id: ->(record) { "Log_#{record.id}" },
         dual_write: true,
         read_from_token: false
@@ -108,11 +108,11 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
         # Configure User with dual_write=true, read_from_token=false
         User.tokenize_pii(
           fields: {
-            first_name: 'FIRST_NAME',
-            last_name: 'LAST_NAME',
-            email: 'EMAIL'
+            first_name: PiiTokenizer::PiiTypes::NAME,
+            last_name: PiiTokenizer::PiiTypes::NAME,
+            email: PiiTokenizer::PiiTypes::EMAIL
           },
-          entity_type: 'user_uuid',
+          entity_type: PiiTokenizer::EntityTypes::USER_UUID,
           entity_id: ->(record) { record.id.to_s },
           dual_write: true,
           read_from_token: false
@@ -152,11 +152,11 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
 
         User.tokenize_pii(
           fields: {
-            first_name: 'FIRST_NAME',
-            last_name: 'LAST_NAME',
-            email: 'EMAIL'
+            first_name: PiiTokenizer::PiiTypes::NAME,
+            last_name: PiiTokenizer::PiiTypes::NAME,
+            email: PiiTokenizer::PiiTypes::EMAIL
           },
-          entity_type: 'user_uuid',
+          entity_type: PiiTokenizer::EntityTypes::USER_UUID,
           entity_id: ->(record) { record.id.to_s },
           dual_write: true,
           read_from_token: false
@@ -182,11 +182,11 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
       it 'verifies no after_save callback is registered anymore' do
         User.tokenize_pii(
           fields: {
-            first_name: 'FIRST_NAME',
-            last_name: 'LAST_NAME',
-            email: 'EMAIL'
+            first_name: PiiTokenizer::PiiTypes::NAME,
+            last_name: PiiTokenizer::PiiTypes::NAME,
+            email: PiiTokenizer::PiiTypes::EMAIL
           },
-          entity_type: 'user_uuid',
+          entity_type: PiiTokenizer::EntityTypes::USER_UUID,
           entity_id: ->(record) { record.id.to_s },
           dual_write: true,
           read_from_token: false
@@ -212,8 +212,8 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
       it 'correctly reads empty string from token column when read_from_token is true' do
         # Configure Log with read_from_token=true
         Log.tokenize_pii(
-          fields: { message: 'MESSAGE' },
-          entity_type: 'log',
+          fields: { message: PiiTokenizer::PiiTypes::NAME },
+          entity_type: PiiTokenizer::EntityTypes::USER_UUID,
           entity_id: ->(record) { "Log_#{record.id}" },
           dual_write: true,
           read_from_token: true
@@ -239,8 +239,8 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
       it 'correctly reads empty string from token column when read_from_token is true but dual_write is false' do
         # Configure Log with read_from_token=true
         Log.tokenize_pii(
-          fields: { message: 'MESSAGE' },
-          entity_type: 'log',
+          fields: { message: PiiTokenizer::PiiTypes::NAME },
+          entity_type: PiiTokenizer::EntityTypes::USER_UUID,
           entity_id: ->(record) { "Log_#{record.id}" },
           dual_write: true,
           read_from_token: true
@@ -250,8 +250,8 @@ RSpec.describe 'PiiTokenizer DualWrite Integration' do
         log = Log.create!(message: 'test')
 
         Log.tokenize_pii(
-          fields: { message: 'MESSAGE' },
-          entity_type: 'log',
+          fields: { message: PiiTokenizer::PiiTypes::NAME },
+          entity_type: PiiTokenizer::EntityTypes::USER_UUID,
           entity_id: ->(record) { "Log_#{record.id}" },
           dual_write: false,
           read_from_token: true

@@ -108,9 +108,9 @@ module PiiTokenizer
             return handle_dynamic_finder(method_name, *args)
           end
 
-          # Handle Rails 4 compatibility methods
-          if handle_rails4_method?(method_name)
-            return handle_rails4_method(method_name, *args)
+          # Handle special ActiveRecord methods that need interception
+          if handle_special_method?(method_name)
+            return handle_special_method(method_name, *args)
           end
 
           super
@@ -118,8 +118,8 @@ module PiiTokenizer
 
         # Check if we respond to a method
         def respond_to_missing?(method_name, include_private = false)
-          # Handle Rails 4 specific methods
-          if handle_rails4_method?(method_name)
+          # Handle special ActiveRecord methods
+          if handle_special_method?(method_name)
             return true
           end
 
@@ -135,11 +135,9 @@ module PiiTokenizer
 
         private
 
-        # Check if method is a Rails 4 specific method that needs special handling
-        def handle_rails4_method?(method_name)
-          return false unless rails4_2?
-
-          # These methods need special handling in Rails 4.2
+        # Check if method is a special ActiveRecord method that needs handling
+        def handle_special_method?(method_name)
+          # These methods need special handling in ActiveRecord
           %i[insert _update_record].include?(method_name)
         end
 
@@ -167,10 +165,9 @@ module PiiTokenizer
           nil
         end
 
-        # Handle Rails 4 specific methods
-        def handle_rails4_method(_method_name, *_args)
-          # For Rails 4 compatibility, simply return true to allow the operation
-          # to continue without breaking the chain
+        # Handle special ActiveRecord methods
+        def handle_special_method(_method_name, *_args)
+          # Simply return true to allow the operation to continue without breaking the chain
           true
         end
       end

@@ -20,7 +20,8 @@ module PiiTokenizer
       end
 
       def get_cached_decrypted_value(field)
-        field_decryption_cache[field.to_sym]
+        key = field.to_sym
+        field_decryption_cache[key] if field_decryption_cache.key?(key)
       end
 
       # --- Entity Information ---
@@ -60,29 +61,30 @@ module PiiTokenizer
         return nil if field_set_to_nil?(field_sym)
 
         # Check cache first
-        return field_decryption_cache[field_sym] if field_decryption_cache.key?(field_sym)
+        cached_value = get_cached_decrypted_value(field_sym)
+        return cached_value if cached_value
 
-        # If this is the first access to any tokenized field, load all tokenized fields at once
+        # If cache is empty, batch load all fields for better performance
         if field_decryption_cache.empty?
-          # Get all regular tokenized fields
           decrypt_all_fields
-          return field_decryption_cache[field_sym] if field_decryption_cache.key?(field_sym)
+          cached_value = get_cached_decrypted_value(field_sym)
+          return cached_value if cached_value
         end
 
-        # If we still don't have the field in cache (rare case), get it individually
+        # Individual field decryption as fallback
         token_column = token_column_for(field)
         encrypted_value = get_encrypted_value(field_sym, token_column)
-
         return encrypted_value if encrypted_value.blank?
 
+        # Decrypt and cache
         result = PiiTokenizer.encryption_service.decrypt_batch([encrypted_value])
         decrypted_value = result[encrypted_value] || read_attribute(field)
+        cache_decrypted_value(field_sym, decrypted_value)
 
-        # Cache and return
-        field_decryption_cache[field_sym] = decrypted_value
         decrypted_value
       end
 
+      # TODO: Check for correctness of this method
       def decrypt_fields(*fields)
         fields = fields.flatten.map(&:to_sym)
         fields_to_decrypt = fields & self.class.tokenized_fields
@@ -114,7 +116,7 @@ module PiiTokenizer
           decrypted = decrypted_values[encrypted]
           if decrypted
             result[field] = decrypted
-            field_decryption_cache[field] = decrypted
+            cache_decrypted_value(field, decrypted)
           else
             result[field] = read_attribute(field)
           end
@@ -142,10 +144,14 @@ module PiiTokenizer
           next if encrypted_value.blank?
 
           # Skip duplicates to avoid redundant decryption requests
-          next if unique_tokens[encrypted_value]
+          if unique_tokens[encrypted_value]
+            # Add this field to the existing token mapping
+            existing_token_fields = token_field_map[encrypted_value]
+            existing_token_fields << field unless existing_token_fields.include?(field)
+            next
+          end
 
           unique_tokens[encrypted_value] = true
-
           tokens_to_decrypt << encrypted_value
           token_field_map[encrypted_value] = [field]
         end
@@ -166,19 +172,19 @@ module PiiTokenizer
               next unless tokenized_data[key].present?
 
               token = tokenized_data[key]
+              field_key = "#{json_field}.#{key}"
 
               # Skip duplicates but add this field to the mapping for the token
               if unique_tokens[token]
                 # Add this JSON field to the existing token mapping
                 field_key = "#{json_field}.#{key}"
-                existing_token_fields = token_field_map[token]
-                existing_token_fields << field_key unless existing_token_fields.include?(field_key)
+                token_field_map[token] << field_key unless token_field_map[token].include?(field_key)
                 next
               end
 
               unique_tokens[token] = true
               tokens_to_decrypt << token
-              token_field_map[token] = ["#{json_field}.#{key}"]
+              token_field_map[token] = [field_key]
             end
           end
         end
@@ -193,17 +199,9 @@ module PiiTokenizer
           field_keys = token_field_map[token]
           next unless field_keys
 
+          # Apply the decrypted value to all fields that use this token
           field_keys.each do |field_key|
-            # Convert field_key to string before checking for '.'
-            field_key_str = field_key.to_s
-
-            field_decryption_cache[field_key.to_sym] = if field_key_str.include?('.')
-                                                         # JSON field, store with the special key format
-                                                         value
-                                                       else
-                                                         # Regular field
-                                                         value
-                                                       end
+            cache_decrypted_value(field_key, value)
           end
         end
       end
@@ -227,30 +225,8 @@ module PiiTokenizer
           end
         end
 
-        # Check if JSON fields need processing
-        json_fields_to_process = []
-        if defined?(self.class.json_tokenized_fields) && self.class.json_tokenized_fields.any?
-          self.class.json_tokenized_fields.each do |json_field, _keys|
-            next unless respond_to?(json_field)
-
-            json_data = read_attribute(json_field)
-            next if json_data.blank?
-
-            # Process if field has changed or if it's specifically marked for processing
-            needs_tokenization = instance_variable_defined?("@#{json_field}_json_needs_tokenization") &&
-                                 instance_variable_get("@#{json_field}_json_needs_tokenization")
-
-            # Only process JSON fields that have changed or are marked for tokenization
-            if !new_record? && !json_field_changed?(json_field) && !needs_tokenization
-              next
-            end
-
-            # Clear the flag if it exists
-            instance_variable_set("@#{json_field}_json_needs_tokenization", false) if instance_variable_defined?("@#{json_field}_json_needs_tokenization")
-
-            json_fields_to_process << json_field
-          end
-        end
+        # Find JSON fields that need processing
+        json_fields_to_process = find_json_fields_needing_processing
 
         # If nothing to process, return early
         return if !regular_fields_processed && json_fields_to_process.empty?
@@ -269,85 +245,132 @@ module PiiTokenizer
 
         # Process regular fields
         if regular_fields_processed
-          fields_to_process = fields_needing_tokenization
-
-          # Add regular fields to the batch
-          fields_to_process.each do |field|
-            token_column = token_column_for(field)
-
-            # Check if this field was explicitly set to nil
-            if field_set_to_nil?(field)
-              # Get the current value to see if a callback might have populated it
-              db_value = read_attribute(field.to_s)
-
-              if db_value.present?
-                # A callback populated this field after it was set to nil - we should tokenize it
-                instance_variable_set("@#{field}_set_to_nil", false)
-                value = db_value
-              else
-                # Field is still nil, proceed with clearing it
-                fields_to_clear << field
-                next
-              end
-            else
-              # Normal case, get field value
-              value = get_field_value(field)
-
-              # Handle nil values
-              if value.nil?
-                fields_to_clear << field
-                next
-              end
-            end
-
-            # Handle empty strings without calling encryption service
-            if value.respond_to?(:blank?) && value.blank?
-              safe_write_attribute(token_column, '')
-              next
-            end
-
-            # Skip blank values only if dual_write is disabled
-            next if !self.class.dual_write_enabled && value.respond_to?(:blank?) && value.blank?
-
-            # Get PII type
-            pii_type = self.class.pii_types[field.to_s]
-            next if pii_type.blank?
-
-            # Add to tokenization batch
-            tokens_data << {
-              value: value,
-              entity_id: entity_id,
-              entity_type: entity_type,
-              field_name: field.to_s,
-              pii_type: pii_type,
-              type: :regular
-            }
-          end
+          process_regular_fields(tokens_data, fields_to_clear, entity_type, entity_id)
         end
 
         # Process JSON fields
-        json_fields_to_process.each do |json_field|
+        unless json_fields_to_process.empty?
+          process_json_fields(json_fields_to_process, tokens_data, json_field_updates, entity_type, entity_id)
+        end
+
+        # Process nil fields
+        clear_token_fields(fields_to_clear) unless fields_to_clear.empty?
+
+        # Skip if no tokens to process
+        return if tokens_data.empty?
+
+        # Process tokens in batch - this is the single API call for both regular and JSON fields
+        values_for_encryption = prepare_values_for_encryption(tokens_data)
+        key_to_token = PiiTokenizer.encryption_service.encrypt_batch(values_for_encryption)
+
+        # Now apply the tokens to the respective fields
+        update_model_with_combined_tokens(tokens_data, key_to_token, json_field_updates)
+
+        # Restore original values if dual_write is enabled
+        restore_original_values if self.class.dual_write_enabled && regular_fields_processed
+      end
+
+      # Find JSON fields that need tokenization based on changes and flags
+      def find_json_fields_needing_processing
+        json_fields = []
+
+        return json_fields unless defined?(self.class.json_tokenized_fields) && self.class.json_tokenized_fields.any?
+
+        self.class.json_tokenized_fields.each do |json_field, _keys|
+          next unless respond_to?(json_field)
+
+          json_data = read_attribute(json_field)
+          next if json_data.blank?
+
+          # Process if field has changed or if it's specifically marked for processing
+          needs_tokenization = instance_variable_defined?("@#{json_field}_json_needs_tokenization") &&
+                               instance_variable_get("@#{json_field}_json_needs_tokenization")
+
+          # Only process JSON fields that have changed or are marked for tokenization
+          if !new_record? && !changed.include?(json_field.to_s) && !needs_tokenization
+            next
+          end
+
+          # Clear the flag if it exists
+          instance_variable_set("@#{json_field}_json_needs_tokenization", false) if instance_variable_defined?("@#{json_field}_json_needs_tokenization")
+
+          json_fields << json_field
+        end
+
+        json_fields
+      end
+
+      # Process all regular fields that need tokenization
+      def process_regular_fields(tokens_data, fields_to_clear, entity_type, entity_id)
+        fields_to_process = fields_needing_tokenization
+
+        # Add regular fields to the batch
+        fields_to_process.each do |field|
+          token_column = token_column_for(field)
+
+          # Check if this field was explicitly set to nil
+          if field_set_to_nil?(field)
+            # Get the current value to see if a callback might have populated it
+            db_value = read_attribute(field.to_s)
+
+            if db_value.present?
+              # A callback populated this field after it was set to nil - we should tokenize it
+              instance_variable_set("@#{field}_set_to_nil", false)
+              value = db_value
+            else
+              # Field is still nil, proceed with clearing it
+              fields_to_clear << field
+              next
+            end
+          else
+            # Normal case, get field value
+            value = get_field_value(field)
+
+            # Handle nil values
+            if value.nil?
+              fields_to_clear << field
+              next
+            end
+          end
+
+          # Handle empty strings without calling encryption service
+          if value.respond_to?(:blank?) && value.blank?
+            safe_write_attribute(token_column, '')
+            next
+          end
+
+          # Skip blank values only if dual_write is disabled
+          next if !self.class.dual_write_enabled && value.respond_to?(:blank?) && value.blank?
+
+          # Get PII type
+          pii_type = self.class.pii_types[field.to_s]
+          next if pii_type.blank?
+
+          # Add to tokenization batch
+          tokens_data << {
+            value: value,
+            entity_id: entity_id,
+            entity_type: entity_type,
+            field_name: field.to_s,
+            pii_type: pii_type,
+            type: :regular
+          }
+        end
+      end
+
+      # Process all JSON fields that need tokenization
+      def process_json_fields(json_fields, tokens_data, json_field_updates, entity_type, entity_id)
+        json_fields.each do |json_field|
           keys = self.class.json_tokenized_fields[json_field.to_s]
           json_data = read_attribute(json_field)
           next if json_data.blank?
 
           # Ensure we're working with a hash
-          json_data = begin
-                        json_data.is_a?(Hash) ? json_data : JSON.parse(json_data.to_s)
-                      rescue StandardError
-                        {}
-                      end
+          json_data = safe_parse_json(json_data)
 
           # Get or initialize tokenized data
           tokenized_column = "#{json_field}_token"
-          tokenized_data = read_attribute(tokenized_column)
-          tokenized_data = tokenized_data.present? ?
-            (begin
-               tokenized_data.is_a?(Hash) ? tokenized_data : JSON.parse(tokenized_data.to_s)
-             rescue StandardError
-               {}
-             end) :
-            {}
+          tokenized_data = safe_parse_json(read_attribute(tokenized_column))
 
           modified = false
 
@@ -365,18 +388,7 @@ module PiiTokenizer
           end
 
           # Get previous JSON data if this is an update
-          previous_json_data = {}
-          if !new_record? && respond_to?(:attribute_before_last_save)
-            # Rails 5.1+
-            prev_data = attribute_before_last_save(json_field.to_s)
-            if prev_data.present?
-              previous_json_data = begin
-                                     prev_data.is_a?(Hash) ? prev_data : JSON.parse(prev_data.to_s)
-                                   rescue StandardError
-                                     {}
-                                   end
-            end
-          end
+          previous_json_data = get_previous_json_data(json_field)
 
           # Add JSON fields to the batch
           keys.each do |key|
@@ -414,15 +426,36 @@ module PiiTokenizer
             modified: modified
           }
         end
+      end
 
-        # Process nil fields
-        clear_token_fields(fields_to_clear) unless fields_to_clear.empty?
+      # Safely convert data to a hash, handling both string and hash inputs
+      def safe_parse_json(data)
+        return {} if data.blank?
 
-        # Skip if no tokens to process
-        return if tokens_data.empty?
+        if data.is_a?(Hash)
+          data
+        else
+          begin
+            JSON.parse(data.to_s)
+          rescue StandardError
+            {}
+          end
+        end
+      end
 
-        # Process tokens in batch - this is the single API call for both regular and JSON fields
-        values_for_encryption = tokens_data.map do |data|
+      # Get previous JSON data for a field using Rails change tracking
+      def get_previous_json_data(json_field)
+        return {} unless !new_record? && respond_to?(:attribute_before_last_save)
+
+        prev_data = attribute_before_last_save(json_field.to_s)
+        return {} unless prev_data.present?
+
+        safe_parse_json(prev_data)
+      end
+
+      # Prepare values for batch encryption API call
+      def prepare_values_for_encryption(tokens_data)
+        tokens_data.map do |data|
           {
             value: data[:value],
             entity_id: data[:entity_id],
@@ -431,14 +464,6 @@ module PiiTokenizer
             pii_type: data[:pii_type]
           }
         end
-
-        key_to_token = PiiTokenizer.encryption_service.encrypt_batch(values_for_encryption)
-
-        # Now apply the tokens to the respective fields
-        update_model_with_combined_tokens(tokens_data, key_to_token, json_field_updates)
-
-        # Restore original values if dual_write is enabled
-        restore_original_values if self.class.dual_write_enabled && regular_fields_processed
       end
 
       # New method to update model with tokens from combined batch operation
@@ -446,60 +471,73 @@ module PiiTokenizer
         tokens_data.each do |token_data|
           value = token_data[:value]
 
-          # Generate key
-          entity_type = token_data[:entity_type].upcase
-          entity_id = token_data[:entity_id]
-          pii_type = token_data[:pii_type]
-
-          key = "#{entity_type}:#{entity_id}:#{pii_type}:#{value}"
-          token = key_to_token[key]
+          # Generate key and get token
+          token = get_token_for_data(token_data, key_to_token)
           next unless token
 
           if token_data[:type] == :regular
-            # Regular field
-            field = token_data[:field_name]
-            field_sym = field.to_sym
-
-            # Update token column
-            token_column = token_column_for(field_sym)
-            safe_write_attribute(token_column, token)
-
-            # Handle original column based on dual_write mode
-            if self.class.dual_write_enabled
-              if value.present?
-                safe_write_attribute(field, value)
-              end
-            else
-              # When dual_write is off, we don't write to the original field
-              # Just store the value in the instance variable for decryption
-              instance_variable_set("@original_#{field_sym}", value)
-            end
-
-            # Update cache and mark as changed
-            field_decryption_cache[field_sym] = value if value.present?
-
-            if respond_to?(:attribute_will_change!)
-              send(:attribute_will_change!, token_column)
-              send(:attribute_will_change!, field) if self.class.dual_write_enabled
-            end
+            update_regular_field_token(token_data, token, value)
           else
-            # JSON field
-            json_field = token_data[:json_field]
-            key = token_data[:json_key]
-
-            # Update the token in the tokenized data
-            field_update = json_field_updates[json_field]
-            next unless field_update && field_update[:modified]
-
-            field_update[:tokenized_data][key] = token
-
-            # Update cache
-            cache_key = "#{json_field}.#{key}".to_sym
-            field_decryption_cache[cache_key] = value if value.present?
+            update_json_field_token(token_data, token, value, json_field_updates)
           end
         end
 
         # Apply JSON field updates
+        apply_json_field_updates(json_field_updates)
+      end
+
+      def get_token_for_data(token_data, key_to_token)
+        # Generate key
+        entity_type = token_data[:entity_type].upcase
+        entity_id = token_data[:entity_id]
+        pii_type = token_data[:pii_type]
+        value = token_data[:value]
+
+        key = "#{entity_type}:#{entity_id}:#{pii_type}:#{value}"
+        key_to_token[key]
+      end
+
+      def update_regular_field_token(token_data, token, value)
+        field = token_data[:field_name]
+        field_sym = field.to_sym
+
+        # Update token column
+        token_column = token_column_for(field_sym)
+        safe_write_attribute(token_column, token)
+
+        # Handle original column based on dual_write mode
+        if self.class.dual_write_enabled
+          safe_write_attribute(field, value) if value.present?
+        else
+          # When dual_write is off, just store value in instance variable
+          instance_variable_set("@original_#{field_sym}", value)
+        end
+
+        # Update cache and mark as changed
+        cache_decrypted_value(field_sym, value) if value.present?
+
+        if respond_to?(:attribute_will_change!)
+          send(:attribute_will_change!, token_column)
+          send(:attribute_will_change!, field) if self.class.dual_write_enabled
+        end
+      end
+
+      def update_json_field_token(token_data, token, value, json_field_updates)
+        json_field = token_data[:json_field]
+        key = token_data[:json_key]
+
+        # Update the token in the tokenized data
+        field_update = json_field_updates[json_field]
+        return unless field_update && field_update[:modified]
+
+        field_update[:tokenized_data][key] = token
+
+        # Update cache
+        cache_key = "#{json_field}.#{key}"
+        cache_decrypted_value(cache_key, value) if value.present?
+      end
+
+      def apply_json_field_updates(json_field_updates)
         json_field_updates.each do |json_field, update_info|
           next unless update_info[:modified]
 
@@ -522,7 +560,7 @@ module PiiTokenizer
           original_value = read_attribute(field_str)
           if original_value.present?
             instance_variable_set("@_preserve_original_#{field}", original_value)
-            field_decryption_cache[field] = original_value
+            cache_decrypted_value(field, original_value)
           end
         end
       end
@@ -548,17 +586,25 @@ module PiiTokenizer
 
       def tokenized_field_changes?
         self.class.tokenized_fields.any? do |field|
-          field_changed?(field) ||
-            instance_variable_defined?("@original_#{field}") ||
-            field_set_to_nil?(field)
+          field_has_changes?(field)
         end
+      end
+
+      def field_has_changes?(field)
+        changed.include?(field.to_s) ||
+          instance_variable_defined?("@original_#{field}") ||
+          field_set_to_nil?(field)
       end
 
       def all_fields_have_tokens?
         self.class.tokenized_fields.all? do |field|
-          token_column = token_column_for(field)
-          read_attribute(token_column).present?
+          token_present?(field)
         end
+      end
+
+      def token_present?(field)
+        token_column = token_column_for(field)
+        read_attribute(token_column).present?
       end
 
       def fields_needing_tokenization
@@ -578,7 +624,7 @@ module PiiTokenizer
           # - Not modified fields
           if !new_record? &&
              read_attribute(token_column).present? &&
-             !field_changed?(field) &&
+             !changed.include?(field.to_s) &&
              !instance_variable_defined?("@original_#{field}")
             next
           end
@@ -605,66 +651,46 @@ module PiiTokenizer
       def clear_token_fields(fields_to_clear)
         return if fields_to_clear.empty?
 
-        # Step 1: Mark fields as changed (Rails 5+ needs this)
+        # Mark fields as changed first
+        mark_fields_as_changed(fields_to_clear)
+
+        # Update field values
         fields_to_clear.each do |field|
-          token_column = token_column_for(field)
-
-          # Always mark token column
-          send(:attribute_will_change!, token_column) if respond_to?(:attribute_will_change!)
-
-          # Mark original field in dual-write mode
-          if self.class.dual_write_enabled
-            send(:attribute_will_change!, field.to_s) if respond_to?(:attribute_will_change!)
-          end
-        end
-
-        # Step 2: Update field values
-        fields_to_clear.each do |field|
-          field_sym = field.to_sym
-          token_column = token_column_for(field_sym)
-
-          # Set token to nil
-          safe_write_attribute(token_column, nil)
-
-          # Handle original field based on dual_write
-          if self.class.dual_write_enabled
-            safe_write_attribute(field.to_s, nil)
-          else
-            # When dual_write is off, we don't write to the original field
-            # Just store nil in the instance variable
-            instance_variable_set("@original_#{field_sym}", nil)
-          end
-
-          # Update cache
-          field_decryption_cache[field_sym] = nil
-        end
-
-        # Step 3: Force update for Rails 5+ if needed
-        if rails5_or_newer? && persisted? && !new_record?
-          update_hash = {}
-          fields_to_clear.each do |field|
-            update_hash[token_column_for(field)] = nil
-            update_hash[field.to_s] = nil if self.class.dual_write_enabled
-          end
-
-          update_columns(update_hash) unless update_hash.empty?
+          clear_field_values(field)
         end
       end
 
-      # Helper method to check if a JSON field has changed
-      def json_field_changed?(json_field)
-        # Use different methods based on Rails version
-        if respond_to?(:saved_change_to_attribute?)
-          # Rails 5.1+ changed? API
-          saved_change_to_attribute?(json_field.to_s)
-        elsif respond_to?(:attribute_changed?)
-          # Rails 4 and 5.0 changed? API
-          attribute_changed?(json_field.to_s)
-        else
-          # Fallback for older Rails or non-Rails
-          instance_variable_defined?("@_#{json_field}_changed") ||
-            previous_changes&.key?(json_field.to_s)
+      def mark_fields_as_changed(fields)
+        return unless respond_to?(:attribute_will_change!)
+
+        fields.each do |field|
+          token_column = token_column_for(field)
+
+          # Always mark token column
+          send(:attribute_will_change!, token_column)
+
+          # Mark original field in dual-write mode
+          send(:attribute_will_change!, field.to_s) if self.class.dual_write_enabled
         end
+      end
+
+      def clear_field_values(field)
+        field_sym = field.to_sym
+        token_column = token_column_for(field_sym)
+
+        # Set token to nil
+        safe_write_attribute(token_column, nil)
+
+        # Handle original field based on dual_write
+        if self.class.dual_write_enabled
+          safe_write_attribute(field.to_s, nil)
+        else
+          # When dual_write is off, just store nil in instance variable
+          instance_variable_set("@original_#{field_sym}", nil)
+        end
+
+        # Update cache
+        cache_decrypted_value(field, nil)
       end
     end
   end

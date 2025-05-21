@@ -60,7 +60,7 @@ module PiiTokenizer
             next unless record_token_map[token]
 
             record_token_map[token].each do |record, field|
-              record.field_decryption_cache[field] = value
+              record.cache_decrypted_value(field, value)
             end
           end
         end
@@ -72,6 +72,13 @@ module PiiTokenizer
           # Store the fields to decrypt in the relation's context
           all.extending(DecryptedFieldsExtension).decrypt_fields(fields)
         end
+      end
+
+      # Instance method to restore fields to their original values using ActiveModel::Dirty
+      def restore_tokenized_attributes
+        tokenizable_fields = self.class.tokenized_fields.map(&:to_s)
+        # Use ActiveModel::Dirty's restore_attributes method to reset field values
+        restore_attributes(tokenizable_fields & changed)
       end
     end
   end

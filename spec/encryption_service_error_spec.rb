@@ -6,6 +6,8 @@ RSpec.describe PiiTokenizer::EncryptionService do
     config.encryption_service_url = 'https://encryption-service.example.com'
     config.logger = Logger.new(File.open(File::NULL, 'w'))
     config.log_level = Logger::FATAL
+    config.timeout = 10
+    config.open_timeout = 2
     config
   end
 
@@ -104,7 +106,7 @@ RSpec.describe PiiTokenizer::EncryptionService do
 
       expect(Faraday).to receive(:new).and_yield(conn).and_return(conn)
       expect(options).to receive(:timeout=).with(10)
-      expect(options).to receive(:open_timeout=).with(5)
+      expect(options).to receive(:open_timeout=).with(2)
 
       # Trigger api_client creation
       service.send(:api_client)

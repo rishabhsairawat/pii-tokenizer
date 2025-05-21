@@ -40,7 +40,7 @@ module PiiTokenizer
 
             # Now check if we have a cached decrypted value (after batch load)
             if field_decryption_cache.key?(field)
-              return field_decryption_cache[field]
+              return get_cached_decrypted_value(field)
             end
 
             # Get the token column value
@@ -99,9 +99,15 @@ module PiiTokenizer
               safe_write_attribute(token_column, nil)
 
               # Store nil in the decryption cache to avoid unnecessary decrypt calls
-              field_decryption_cache[field.to_sym] = nil
+              cache_decrypted_value(field, nil)
 
               return nil
+            end
+
+            # Skip operation if the value hasn't actually changed
+            current_value = send(field)
+            if !attribute_changed?(field.to_s) && current_value == value
+              return value
             end
 
             # For non-nil values, continue with normal flow
@@ -123,7 +129,7 @@ module PiiTokenizer
             send(:attribute_will_change!, "#{field}_token") if respond_to?(:attribute_will_change!)
 
             # Cache the value
-            field_decryption_cache[field.to_sym] = value
+            cache_decrypted_value(field, value)
 
             # Return the value
             value

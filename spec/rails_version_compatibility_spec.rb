@@ -25,11 +25,11 @@ RSpec.describe 'Rails version compatibility' do
       # Configure with dual_write=true, read_from_token=false
       User.tokenize_pii(
         fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
+          first_name: PiiTokenizer::PiiTypes::NAME,
+          last_name: PiiTokenizer::PiiTypes::NAME,
+          email: PiiTokenizer::PiiTypes::EMAIL
         },
-        entity_type: 'user_uuid',
+        entity_type: PiiTokenizer::EntityTypes::USER_UUID,
         entity_id: ->(record) { record.id.to_s },
         dual_write: true,
         read_from_token: false
@@ -89,11 +89,11 @@ RSpec.describe 'Rails version compatibility' do
       # Configure with dual_write=false
       User.tokenize_pii(
         fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
+          first_name: PiiTokenizer::PiiTypes::NAME,
+          last_name: PiiTokenizer::PiiTypes::NAME,
+          email: PiiTokenizer::PiiTypes::EMAIL
         },
-        entity_type: 'user_uuid',
+        entity_type: PiiTokenizer::EntityTypes::USER_UUID,
         entity_id: ->(record) { record.id.to_s },
         dual_write: false,
         read_from_token: true
@@ -169,31 +169,6 @@ RSpec.describe 'Rails version compatibility' do
       user.instance_variable_set(:@tokenization_state, nil)
     end
 
-    it 'handles field_changed? in both Rails 4 and 5' do
-      # Test the field_changed? method
-      if ::ActiveRecord::VERSION::MAJOR >= 5
-        allow(user).to receive(:previous_changes).and_return('first_name' => ['Old', 'New'])
-        expect(user.send(:field_changed?, 'first_name')).to be true
-        expect(user.send(:field_changed?, 'age')).to be false
-      else
-        allow(user).to receive(:changes).and_return('first_name' => ['Old', 'New'])
-        expect(user.send(:field_changed?, 'first_name')).to be true
-        expect(user.send(:field_changed?, 'age')).to be false
-      end
-    end
-
-    it 'handles active_changes in both Rails 4 and 5' do
-      changes_hash = { 'first_name' => ['Old', 'New'] }
-
-      if ::ActiveRecord::VERSION::MAJOR >= 5
-        allow(user).to receive(:previous_changes).and_return(changes_hash)
-        expect(user.send(:active_changes)).to eq(changes_hash)
-      else
-        allow(user).to receive(:changes).and_return(changes_hash)
-        expect(user.send(:active_changes)).to eq(changes_hash)
-      end
-    end
-
     it 'uses entity_id directly without availability checks' do
       # Configure a test class with tokenization
       test_class = Class.new(ActiveRecord::Base) do
@@ -205,8 +180,8 @@ RSpec.describe 'Rails version compatibility' do
 
       # Configure tokenization with a proc that always returns a fixed value
       test_class.tokenize_pii(
-        fields: { first_name: 'FIRST_NAME' },
-        entity_type: 'test_type',
+        fields: { first_name: PiiTokenizer::PiiTypes::NAME },
+        entity_type: PiiTokenizer::EntityTypes::USER_UUID,
         entity_id: ->(_) { 'test_id' },
         dual_write: false,
         read_from_token: true
@@ -217,29 +192,21 @@ RSpec.describe 'Rails version compatibility' do
 
       # Verify that entity_id works as expected
       expect(test_record.entity_id).to eq('test_id')
-      expect(test_record.entity_type).to eq('test_type')
+      expect(test_record.entity_type).to eq('USER_UUID')
 
       # Set up the expectation on the encryption service
       expect(encryption_service).to receive(:encrypt_batch) do |tokens_data|
         # In our simplified approach, entity_id should be directly used without checks
         expect(tokens_data.size).to be >= 1
         expect(tokens_data.first[:entity_id]).to eq('test_id')
-        expect(tokens_data.first[:entity_type]).to eq('test_type')
+        expect(tokens_data.first[:entity_type]).to eq('USER_UUID')
         expect(tokens_data.first[:value]).to eq('Test Value')
-        expect(tokens_data.first[:pii_type]).to eq('FIRST_NAME')
+        expect(tokens_data.first[:pii_type]).to eq('NAME')
         {} # Return empty result
       end
 
       # Manually trigger tokenization
       test_record.send(:encrypt_pii_fields)
-    end
-
-    it 'correctly falls back to empty hash when changes methods are missing' do
-      # Test fallback behavior
-      allow(user).to receive(:respond_to?).with(:previous_changes).and_return(false)
-      allow(user).to receive(:respond_to?).with(:changes).and_return(false)
-
-      expect(user.send(:active_changes)).to eq({})
     end
   end
 end

@@ -10,9 +10,9 @@ RSpec.describe 'PiiTokenizer DualWrite' do
     # Reset User class configuration to default test values
     User.tokenize_pii(
       fields: {
-        first_name: 'FIRST_NAME',
-        last_name: 'LAST_NAME',
-        email: 'EMAIL'
+        first_name: PiiTokenizer::PiiTypes::NAME,
+        last_name: PiiTokenizer::PiiTypes::NAME,
+        email: PiiTokenizer::PiiTypes::EMAIL
       },
       entity_type: 'user_uuid',
       entity_id: ->(record) { record.id.to_s },
@@ -56,9 +56,9 @@ RSpec.describe 'PiiTokenizer DualWrite' do
   after do
     User.tokenize_pii(
       fields: {
-        first_name: 'FIRST_NAME',
-        last_name: 'LAST_NAME',
-        email: 'EMAIL'
+        first_name: PiiTokenizer::PiiTypes::NAME,
+        last_name: PiiTokenizer::PiiTypes::NAME,
+        email: PiiTokenizer::PiiTypes::EMAIL
       },
       entity_type: 'user_uuid',
       entity_id: ->(record) { record.id.to_s },
@@ -72,9 +72,9 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       # Configure User model with dual_write=true
       User.tokenize_pii(
         fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
+          first_name: PiiTokenizer::PiiTypes::NAME,
+          last_name: PiiTokenizer::PiiTypes::NAME,
+          email: PiiTokenizer::PiiTypes::EMAIL
         },
         entity_type: 'user_uuid',
         entity_id: ->(record) { record.id.to_s },
@@ -253,9 +253,9 @@ RSpec.describe 'PiiTokenizer DualWrite' do
       # Configure User model with dual_write=false
       User.tokenize_pii(
         fields: {
-          first_name: 'FIRST_NAME',
-          last_name: 'LAST_NAME',
-          email: 'EMAIL'
+          first_name: PiiTokenizer::PiiTypes::NAME,
+          last_name: PiiTokenizer::PiiTypes::NAME,
+          email: PiiTokenizer::PiiTypes::EMAIL
         },
         entity_type: 'user_uuid',
         entity_id: ->(record) { record.id.to_s },

@@ -8,7 +8,7 @@ RSpec.describe PiiTokenizer::EncryptionService do
   let(:url) { 'https://encryption-service.example.com' }
   # Create a null logger for tests
   let(:logger) { Logger.new(File.open(File::NULL, 'w')) }
-  let(:config) { double('Configuration', encryption_service_url: url, batch_size: 10, logger: logger, log_level: :info) }
+  let(:config) { double('Configuration', encryption_service_url: url, batch_size: 10, logger: logger, log_level: :info, timeout: 10, open_timeout: 2) }
   let(:service) { described_class.new(config) }
 
   # Set up WebMock stubs for common requests
@@ -207,32 +207,6 @@ RSpec.describe PiiTokenizer::EncryptionService do
       expect(service.decrypt_batch(nil)).to eq({})
     end
 
-    it 'supports legacy format with token data hashes' do
-      tokens_data = [
-        { token: 'token1', entity_type: 'user', entity_id: '1', pii_type: 'NAME' },
-        { token: 'token2', entity_type: 'user', entity_id: '1', pii_type: 'EMAIL' }
-      ]
-
-      response_body = {
-        data: [
-          { token: 'token1', decrypted_value: 'John Doe' },
-          { token: 'token2', decrypted_value: 'john@example.com' }
-        ]
-      }.to_json
-
-      # Expect the new API format with only tokens
-      stub_request(:get, "#{url}/api/v1/tokens/decrypt?tokens[]=token1&tokens[]=token2")
-        .to_return(status: 200, body: response_body)
-
-      result = service.decrypt_batch(tokens_data)
-
-      # Expect the result to be formatted with entity keys for compatibility
-      expect(result).to eq(
-        'USER:1:NAME' => 'John Doe',
-        'USER:1:EMAIL' => 'john@example.com'
-      )
-    end
-
     it 'raises error on failed response' do
       tokens = ['token1', 'token2']
       response_body = { error: 'Invalid tokens' }.to_json
@@ -253,11 +227,7 @@ RSpec.describe PiiTokenizer::EncryptionService do
     end
 
     it 'handles partial matches in token to value mapping' do
-      tokens_data = [
-        { token: 'token1', entity_type: 'user', entity_id: '1', pii_type: 'NAME' },
-        { token: 'token2', entity_type: 'user', entity_id: '1', pii_type: 'EMAIL' },
-        { token: 'token3', entity_type: 'user', entity_id: '1', pii_type: 'PHONE' } # This won't have a match
-      ]
+      tokens_data = ['token1', 'token2', 'token3']
 
       response_body = {
         data: [
@@ -274,8 +244,8 @@ RSpec.describe PiiTokenizer::EncryptionService do
 
       # Only the matches should be in the result
       expect(result).to eq(
-        'USER:1:NAME' => 'John Doe',
-        'USER:1:EMAIL' => 'john@example.com'
+        'token1' => 'John Doe',
+        'token2' => 'john@example.com'
       )
       expect(result['USER:1:PHONE']).to be_nil
     end
@@ -369,7 +339,9 @@ RSpec.describe PiiTokenizer::EncryptionService do
                              encryption_service_url: url,
                              batch_size: 10,
                              logger: test_logger,
-                             log_level: Logger::INFO)
+                             log_level: Logger::INFO,
+                             timeout: 10,
+                             open_timeout: 2)
       service_with_custom_logger = described_class.new(custom_config)
 
       stub_request(:get, "#{url}/api/v1/tokens/decrypt?tokens[]=token1")
@@ -391,7 +363,9 @@ RSpec.describe PiiTokenizer::EncryptionService do
              encryption_service_url: url,
              batch_size: 10,
              logger: test_logger,
-             log_level: Logger::INFO)
+             log_level: Logger::INFO,
+             timeout: 10,
+             open_timeout: 2)
     end
     let(:service_with_logger) { described_class.new(config_with_logger) }
 
@@ -446,7 +420,9 @@ RSpec.describe PiiTokenizer::EncryptionService do
                              encryption_service_url: url,
                              batch_size: 10,
                              logger: test_logger,
-                             log_level: Logger::INFO)
+                             log_level: Logger::INFO,
+                             timeout: 10,
+                             open_timeout: 2)
       service_with_custom_logger = described_class.new(custom_config)
 
       stub_request(:get, "#{url}/api/v1/tokens/decrypt?tokens[]=token1")
@@ -474,7 +450,9 @@ RSpec.describe PiiTokenizer::EncryptionService do
                       encryption_service_url: url,
                       batch_size: 10,
                       logger: custom_logger,
-                      log_level: :debug)
+                      log_level: :debug,
+                      timeout: 10,
+                      open_timeout: 2)
 
       service = described_class.new(config)
 
@@ -487,7 +465,9 @@ RSpec.describe PiiTokenizer::EncryptionService do
                       encryption_service_url: url,
                       batch_size: 10,
                       logger: nil,
-                      log_level: :info)
+                      log_level: :info,
+                      timeout: 10,
+                      open_timeout: 2)
 
       service = described_class.new(config)
 
@@ -571,7 +551,9 @@ RSpec.describe PiiTokenizer::EncryptionService do
                              encryption_service_url: url,
                              batch_size: 10,
                              logger: test_logger,
-                             log_level: Logger::INFO)
+                             log_level: Logger::INFO,
+                             timeout: 10,
+                             open_timeout: 2)
 
       service_with_logger = described_class.new(custom_config)
 

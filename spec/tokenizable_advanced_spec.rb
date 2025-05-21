@@ -103,7 +103,6 @@ RSpec.describe PiiTokenizer::Tokenizable do
         result
       end
 
-      # For handling register_for_decryption
       allow(new_user).to receive(:field_decryption_cache).and_return({})
       allow(new_user).to receive(:new_record?).and_return(false)
 
@@ -126,7 +125,7 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
         attr_accessor :role, :id
 
-        tokenize_pii fields: [:first_name],
+        tokenize_pii fields: { first_name: PiiTokenizer::PiiTypes::NAME },
                      entity_type: ->(user) { user.role || 'default' },
                      entity_id: ->(user) { "user_#{user.id}" }
 
@@ -153,8 +152,8 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
         attr_accessor :id
 
-        tokenize_pii fields: [:first_name],
-                     entity_type: 'static_type',
+        tokenize_pii fields: { first_name: PiiTokenizer::PiiTypes::NAME },
+                     entity_type: PiiTokenizer::EntityTypes::USER_UUID,
                      entity_id: ->(user) { "user_#{user.id}" }
 
         def initialize(id:)
@@ -163,7 +162,7 @@ RSpec.describe PiiTokenizer::Tokenizable do
       end
 
       user = StaticEntityUser.new(id: 1)
-      expect(user.entity_type).to eq('static_type')
+      expect(user.entity_type).to eq('USER_UUID')
     end
   end
 
@@ -247,11 +246,11 @@ RSpec.describe PiiTokenizer::Tokenizable do
       # Set dual_write to true
       User.dual_write_enabled = true
 
-      # Set up encryption response using the correct entity type
+      # Set up encryption response with the actual entity type from integration tests
       allow(encryption_service).to receive(:encrypt_batch).and_return({
-                                                                        'USER_UUID:1:FIRST_NAME:John' => 'token_for_john',
-                                                                        'USER_UUID:1:LAST_NAME:Doe' => 'token_for_doe',
-                                                                        'USER_UUID:1:EMAIL:john@example.com' => 'token_for_john@example.com'
+                                                                        'USER_UUID:1:NAME:John' => 'encrypted_first_name',
+                                                                        'USER_UUID:1:NAME:Doe' => 'encrypted_last_name',
+                                                                        'USER_UUID:1:EMAIL:john@example.com' => 'encrypted_email'
                                                                       })
 
       # Make sure to use the actual entity type/id settings
@@ -263,11 +262,11 @@ RSpec.describe PiiTokenizer::Tokenizable do
       user.reload
       # Original field should not be nil
       expect(user.read_attribute(:first_name)).to eq('John')
-      expect(user.read_attribute(:first_name_token)).to eq('token_for_john')
+      expect(user.read_attribute(:first_name_token)).to eq('encrypted_first_name')
       expect(user.read_attribute(:last_name)).to eq('Doe')
-      expect(user.read_attribute(:last_name_token)).to eq('token_for_doe')
+      expect(user.read_attribute(:last_name_token)).to eq('encrypted_last_name')
       expect(user.read_attribute(:email)).to eq('john@example.com')
-      expect(user.read_attribute(:email_token)).to eq('token_for_john@example.com')
+      expect(user.read_attribute(:email_token)).to eq('encrypted_email')
 
       # Reset the dual_write setting
       User.dual_write_enabled = original_dual_write
@@ -284,9 +283,9 @@ RSpec.describe PiiTokenizer::Tokenizable do
 
       # Set up encryption response with the actual entity type from integration tests
       allow(encryption_service).to receive(:encrypt_batch).and_return({
-                                                                        'USER_UUID:1:FIRST_NAME' => 'encrypted_first_name',
-                                                                        'USER_UUID:1:LAST_NAME' => 'encrypted_last_name',
-                                                                        'USER_UUID:1:EMAIL' => 'encrypted_email'
+                                                                        'USER_UUID:1:NAME:John' => 'encrypted_first_name',
+                                                                        'USER_UUID:1:NAME:Doe' => 'encrypted_last_name',
+                                                                        'USER_UUID:1:EMAIL:john@example.com' => 'encrypted_email'
                                                                       })
 
       # Make sure to use the actual entity type/id settings from integration tests

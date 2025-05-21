@@ -158,7 +158,7 @@ module PiiTokenizer
               tokenized_keys.each do |key|
                 cache_key = "#{json_field}.#{key}".to_sym
                 if field_decryption_cache.key?(cache_key)
-                  decrypted_json[key] = field_decryption_cache[cache_key]
+                  decrypted_json[key] = get_cached_decrypted_value(cache_key)
                 end
               end
 
@@ -224,7 +224,7 @@ module PiiTokenizer
 
             if field_decryption_cache.key?(cache_key)
               # Use cached decrypted value
-              result[key] = field_decryption_cache[cache_key]
+              result[key] = get_cached_decrypted_value(cache_key)
             elsif tokenized_data[key].present?
               # Token exists - try to decrypt
               token = tokenized_data[key]
@@ -233,7 +233,7 @@ module PiiTokenizer
 
               if value.present?
                 result[key] = value
-                field_decryption_cache[cache_key] = value
+                cache_decrypted_value(cache_key, value)
               end
             end
           end
@@ -255,7 +255,7 @@ module PiiTokenizer
 
             if field_decryption_cache.key?(cache_key)
               # Use cached decrypted value
-              result[key] = field_decryption_cache[cache_key]
+              result[key] = get_cached_decrypted_value(cache_key)
             elsif tokenized_data[key].present?
               # Token exists - try to decrypt
               token = tokenized_data[key]
@@ -264,7 +264,7 @@ module PiiTokenizer
 
               if value.present?
                 result[key] = value
-                field_decryption_cache[cache_key] = value
+                cache_decrypted_value(cache_key, value)
               end
             # Fall back to original data if the token doesn't exist
             elsif json_data[key].present?
@@ -355,7 +355,7 @@ module PiiTokenizer
           keys_to_tokenize << key
 
           # Cache the decrypted value
-          field_decryption_cache["#{json_field}.#{key}".to_sym] = value
+          cache_decrypted_value("#{json_field}.#{key}", value)
         end
 
         # Process tokens in batch if needed
@@ -443,7 +443,7 @@ module PiiTokenizer
 
               if pii_type.present?
                 # Update the field_decryption_cache
-                model_instance.field_decryption_cache["#{attr_name_str}.#{key_str}".to_sym] = value_param
+                model_instance.cache_decrypted_value("#{attr_name_str}.#{key_str}", value_param)
 
                 # Mark this JSON field as needing to be tokenized on save
                 if model_instance.class.json_tokenized_fields.key?(attr_name_str) &&
